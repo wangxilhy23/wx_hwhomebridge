@@ -7,6 +7,7 @@ Service Router - 控制路由与状态上报
 3. 设备注册：聚合 HA device 下的 entity，创建 VirtualDevice 并注册
 """
 
+import copy
 import json
 import os
 import logging
@@ -72,7 +73,9 @@ class ServiceRouter:
     def register_device(self, device_id: str, device_name: str,
                         entity_list: list, model: str = "",
                         manufacturer: str = "",
-                        reuse_sn: str = None) -> Optional[VirtualDevice]:
+                        role: str = "",
+                        role_domains: set = None,
+                        display_name: str = "") -> Optional[VirtualDevice]:
         """注册一个 HA device 到服务路由中
 
         执行以下步骤：
@@ -81,6 +84,9 @@ class ServiceRouter:
         3. 创建 VirtualDevice，建立 service → entity 映射
         4. 分配 SN 并注册到 SNManager
 
+        同一个 HA 设备可以拆成多个 VirtualDevice（如风扇灯拆成灯 + 风扇），
+        通过 ``role`` / ``role_domains`` 区分；不同 role 使用不同 SN。
+
         Args:
             device_id: HA device_id
             device_name: HA device name
@@ -88,7 +94,9 @@ class ServiceRouter:
                 {"entity_id": str, "domain": str, "device_class": str|None}
             model: device model
             manufacturer: device manufacturer
-            reuse_sn: 如果提供，复用此 SN 而非重新生成（用于设备更新场景）
+            role: 子设备角色（如 "light" / "fan"）；为空表示不拆分
+            role_domains: 该角色只绑定这些 HA domain 的实体
+            display_name: 桥接到华为侧时显示的名称
 
         Returns:
             创建的 VirtualDevice，如果注册失败返回 None
@@ -122,9 +130,6 @@ class ServiceRouter:
         #    此时不能创建 VirtualDevice / 桥接设备条目，否则会在 HA 里留下永远
         #    无法同步到华为侧的幽灵设备。
         if not is_c_supported(product.pid):
-            # 设备更新场景：如果旧映射存在，先移除，避免继续用旧品类上报
-            if reuse_sn:
-                self.sn_manager.unregister(reuse_sn)
             key = (device_id, product.pid)
             if key not in self._unsupported_logged:
                 self._unsupported_logged.add(key)
@@ -139,36 +144,82 @@ class ServiceRouter:
             self.skipped_unsupported += 1
             return None
 
-        # 4. 创建 VirtualDevice
-        if reuse_sn:
-            # 更新场景：复用原 SN
-            # 先注销旧的 VirtualDevice（如果存在）
-            self.sn_manager.unregister(reuse_sn)
-            sn = reuse_sn
-        else:
-            # 新设备：生成新 SN
-            sn = SNManager.generate_sn(device_id)
-        
-        vd = VirtualDevice(sn=sn, product=product, ha_device_id=device_id)
+        # 4. 风扇角色：复用灯类产品（PID 002）的 switch/brightness 服务，
+        #    把 brightness 解释为风速百分比，从而在当前预编译 C 库上也能控制风扇。
+        if role == "fan":
+            product = self._build_fan_role_product(product)
 
-        # 5. 建立 service → entity 映射
-        mapping_count = self._build_service_mapping(vd, product, entity_list)
+        # 5. 创建 VirtualDevice
+        if role and role != "light":
+            # 同一 HA 设备的子设备使用不同 SN，避免互相覆盖
+            sn = SNManager.generate_sn(f"{device_id}#{role}")
+        else:
+            # 新设备 / 灯角色：保持原来的 SN 生成方式，兼容已配对设备
+            sn = SNManager.generate_sn(device_id)
+
+        vd = VirtualDevice(
+            sn=sn,
+            product=product,
+            ha_device_id=device_id,
+            role=role,
+            display_name=display_name or device_name,
+        )
+
+        # 6. 建立 service → entity 映射（只绑定当前角色对应的 domain）
+        entities_for_mapping = entity_list
+        if role_domains is not None:
+            entities_for_mapping = [
+                entity for entity in entity_list
+                if entity.get("domain") in role_domains
+            ]
+        mapping_count = self._build_service_mapping(vd, product, entities_for_mapping)
 
         if mapping_count == 0:
             _LOGGER.warning(f"Device {device_id}: product {product.pid} matched, "
-                            f"but no service-entity mapping could be established, skip")
+                            f"but no service-entity mapping could be established for "
+                            f"role '{role or '-'}', skip")
             return None
 
-        # 6. 注册到 SNManager
+        # 7. 注册到 SNManager
         result = self.sn_manager.register(vd)
         if not result:
             _LOGGER.error(f"Device {device_id}: SNManager registration failed (SN conflict?)")
             return None
 
         _LOGGER.info(f"Registered device: sn={sn}, product={product.pid} ({product.name}), "
-                      f"device={device_id}, strategy={strategy}, "
+                      f"device={device_id}, role={role or '-'}, strategy={strategy}, "
                       f"mappings={mapping_count}")
         return vd
+
+    def _build_fan_role_product(self, product: ProductDef) -> ProductDef:
+        """构造风扇角色的产品定义
+
+        当前预编译 C 库没有风扇设备类型，因此复用灯类产品的服务 ID：
+        - switch     → 风扇开关
+        - brightness → 风扇风速（0-100）
+
+        返回的是深拷贝，不会影响灯角色的产品定义。
+        """
+        fan_product = copy.deepcopy(product)
+        fan_product.name = f"{product.name}（风扇）" if product.name else "风扇"
+
+        switch_svc = fan_product.services.get("switch")
+        if switch_svc is not None:
+            switch_svc.ha_mapping.domain = "fan"
+            switch_svc.ha_mapping.action = "turn_on_off"
+            switch_svc.ha_mapping.value_attr = "state"
+
+        brightness_svc = fan_product.services.get("brightness")
+        if brightness_svc is not None:
+            mapping = brightness_svc.ha_mapping
+            mapping.domain = "fan"
+            mapping.action = "set_fan_speed"
+            mapping.value_attr = "percentage"
+            mapping.brightness_range = None
+
+        # 风扇没有色温能力；避免 C 侧查询/上报 cct 时产生无意义状态
+        fan_product.services.pop("cct", None)
+        return fan_product
 
     def _build_service_mapping(self, vd: VirtualDevice, product: ProductDef,
                                 entity_list: list) -> int:
@@ -851,7 +902,7 @@ class ServiceRouter:
             self._update_hw_bridge_status(sn, c_svc_id, {char_name: 1 if is_on else 0})
             return
 
-        if service_id == "fanSpeed":
+        if service_id in ("fanSpeed", "brightness"):
             percentage = attrs.get("percentage")
             if percentage is None:
                 return
@@ -1129,7 +1180,7 @@ class ServiceRouter:
             if domain == "fan":
                 if svc_id == "switch":
                     return json.dumps({char_name: 1 if state_value == "on" else 0})
-                if svc_id == "fanSpeed":
+                if svc_id in ("fanSpeed", "brightness"):
                     percentage = attrs.get("percentage")
                     if percentage is None:
                         return None
@@ -1242,31 +1293,30 @@ class ServiceRouter:
     # 设备注册/注销（HiLink 侧）
     # -------------------------------------------------------------------
 
-    def unregister_device(self, device_id: str) -> Optional[VirtualDevice]:
-        """注销设备：上报离线并清理 VirtualDevice
+    def unregister_device(self, device_id: str) -> list:
+        """注销设备：上报离线并清理该 HA 设备下的所有 VirtualDevice
 
         Args:
             device_id: HA 的 device_id
 
         Returns:
-            被注销的 VirtualDevice，如果不存在返回 None
+            被注销的 VirtualDevice 列表（风扇灯可能有两个子设备）
         """
-        vd = self.sn_manager.get_by_device_id(device_id)
-        if vd is None:
+        vds = self.sn_manager.get_all_by_device_id(device_id)
+        if not vds:
             _LOGGER.debug(f"Device {device_id} not registered, skip unregister")
-            return None
+            return []
 
-        sn = vd.sn
-        _LOGGER.info(f"Unregistering device: sn={sn}, device_id={device_id}")
+        for vd in vds:
+            sn = vd.sn
+            _LOGGER.info(f"Unregistering device: sn={sn}, device_id={device_id}, "
+                         f"role={vd.role or '-'}")
+            # 设备恢复出厂，删除云端信息 (status=2)
+            self.register_device_to_hilink(sn, 2)
+            self.sn_manager.unregister(sn)
 
-        # 设备恢复出厂，删除云测信息 (status=2)
-        self.register_device_to_hilink(sn, 2)
-
-        # 从 SN 管理器中移除
-        self.sn_manager.unregister(sn)
-
-        _LOGGER.info(f"Device unregistered: sn={sn}, device_id={device_id}")
-        return vd
+        _LOGGER.info(f"Device unregistered: device_id={device_id}, count={len(vds)}")
+        return vds
 
     def register_device_to_hilink(self, sn: str, status: int) -> bool:
         """将设备注册到 HiLink（调用 C library 的 HilinkSyncBrgDevStatus）

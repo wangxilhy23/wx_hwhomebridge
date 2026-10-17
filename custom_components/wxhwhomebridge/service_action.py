@@ -446,12 +446,16 @@ class ServiceActionDispatcher:
         """处理风速设置
 
         - fan 域：华为 fanSpeed 作为 0-100 百分比 → fan.set_percentage
+          （风扇灯拆分的风扇角色用 brightness 承载风速，因此也接受 brightness 字段）
         - climate 域：华为档位枚举 → 实体 fan_modes 文本 → climate.set_fan_mode
         """
         if not self._hass:
             return False
 
-        hw_speed = payload.get("fanSpeed", payload.get("speed"))
+        hw_speed = payload.get(
+            "fanSpeed",
+            payload.get("speed", payload.get("brightness")),
+        )
         if hw_speed is None:
             _LOGGER.warning(f"set_fan_speed: no fanSpeed in payload for {entity_id}")
             return False

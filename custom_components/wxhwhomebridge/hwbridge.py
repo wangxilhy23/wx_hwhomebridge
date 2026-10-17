@@ -34,10 +34,10 @@ from homeassistant.const import (
 
 from .service_router import ServiceRouter
 from .pin_manager import PINManager
-from .virtual_device import SNManager
 from .const import SKIP_PLATFORMS, DOMAIN
 from .native_async import drain_native, submit_callback
 from .c_capabilities import get_pid_index, is_c_supported
+from .device_roles import build_sub_device_roles, role_display_name
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -70,8 +70,10 @@ hilink_cfg_files = ("bridge.cfg",
 # 运行时在 start_hw_hilink_bridge 中拼接到 hilink_config_dir 下，避免污染 config 根目录
 saved_device_file = None
 excluded_devices_file = None
+saved_sns_file = None
 registered_device_ids = set()  # 已注册到 HiLink 的 device_id 集合
 saved_device_ids = set()        # 从持久化文件恢复的 device_id 集合
+saved_sns = set()               # 已注册到 HiLink 的 SN 集合（支持一设备多子设备）
 
 # 状态缓冲区池：保持 bytes 对象引用，防止被垃圾回收导致 C 侧访问悬空指针
 # C 侧会在回调返回时拷贝内容，Python 侧保持引用直到下次调用或进程结束
@@ -143,6 +145,7 @@ async def start_hw_hilink_bridge(hass: HomeAssistant):
     os.environ['HILINK_CONFIG_DIR'] = hilink_config_dir + '/'
     saved_device_file = os.path.join(hilink_config_dir, 'new_device.txt')
     excluded_devices_file = os.path.join(hilink_config_dir, 'excluded_devices.txt')
+    saved_sns_file = os.path.join(hilink_config_dir, 'registered_sns.txt')
     _LOGGER.info(f"wxhwhomebridge runtime dir: {hilink_config_dir}")
 
     # 加载 C 库（按 CPU 架构选择对应的 so）
@@ -357,6 +360,9 @@ def stop_hw_hilink_bridge(hass: HomeAssistant):
         os.remove(saved_device_file)
     if excluded_devices_file and os.path.exists(excluded_devices_file):
         os.remove(excluded_devices_file)
+    if saved_sns_file and os.path.exists(saved_sns_file):
+        os.remove(saved_sns_file)
+    saved_sns.clear()
     for filename in hilink_cfg_files:
         onefile = os.path.join(hilink_config_dir, filename)
         if os.path.exists(onefile):
@@ -468,6 +474,13 @@ def OnDevStatusCB(sn_data, svcId):
             _LOGGER.debug(f"OnDevStatusCB: {domain} entity {entity_id}, using cached switch_state={vd.switch_state}")
             return vd.switch_state
         
+        # brightness 服务：风扇角色下代表风速百分比
+        if svc_id_decoded == "brightness" and domain == "fan":
+            if state and state.state == 'on':
+                percentage = state.attributes.get('percentage') or 0
+                return max(0, min(100, int(percentage)))
+            return 0
+
         # brightness 服务：返回亮度值 (0-100)
         if svc_id_decoded == "brightness":
             if state and state.state == 'on':
@@ -628,10 +641,13 @@ def _handle_bridge_status(status):
             registered_device_ids.clear()
             saved_device_ids.clear()
             _excluded_device_sns.clear()
+            saved_sns.clear()
             if saved_device_file and os.path.exists(saved_device_file):
                 os.remove(saved_device_file)
             if excluded_devices_file and os.path.exists(excluded_devices_file):
                 os.remove(excluded_devices_file)
+            if saved_sns_file and os.path.exists(saved_sns_file):
+                os.remove(saved_sns_file)
             for filename in hilink_cfg_files:
                 onefile = os.path.join(hilink_config_dir, filename)
                 if os.path.exists(onefile):
@@ -741,7 +757,11 @@ def OnGetRoomInfoCB(sn_ptr, roomName_ptr, devName_ptr):
                     if bridge_entry and bridge_entry.name_by_user:
                         dev_name = bridge_entry.name_by_user
 
-                # 其次：原始 HA 设备的 name_by_user 或 name
+                # 其次：VirtualDevice 的角色显示名（风扇灯拆分时区分"灯"和"风扇"）
+                if not dev_name and vd.display_name:
+                    dev_name = vd.display_name
+
+                # 再次：原始 HA 设备的 name_by_user 或 name
                 orig_entry = None
                 if not dev_name:
                     orig_entry = dev_reg.devices.get(vd.ha_device_id)
@@ -823,6 +843,15 @@ def notify_new_device(hass: HomeAssistant):
                     _excluded_device_sns.add(sn)
         _LOGGER.info(f"Loaded {len(_excluded_device_sns)} excluded device SNs")
 
+    # 加载已注册 SN 列表（支持一台 HA 设备拆成灯 + 风扇两个子设备）
+    if saved_sns_file and os.path.exists(saved_sns_file):
+        with open(saved_sns_file, 'r') as f:
+            for line in f:
+                sn = line.strip()
+                if sn:
+                    saved_sns.add(sn)
+        _LOGGER.info(f"Loaded {len(saved_sns)} saved sub-device SNs")
+
     # 通过 HA 的 device_registry 和 entity_registry 发现设备
     _discover_and_register_devices(hass)
 
@@ -879,15 +908,14 @@ def _discover_and_register_devices(hass: HomeAssistant):
         )
 
 
-def _register_single_device(device_id: str, reuse_sn: str = None, is_update: bool = False) -> bool:
+def _register_single_device(device_id: str, is_update: bool = False) -> bool:
     """注册单个设备到 HiLink
     
     从 HA 的 device_registry 和 entity_registry 收集设备信息，
-    通过 ServiceRouter 注册到 HiLink。
+    通过 ServiceRouter 注册到 HiLink。风扇灯会拆成灯 + 风扇两个子设备。
     
     Args:
         device_id: HA 的 device_id
-        reuse_sn: 复用指定的 SN（用于设备更新场景）
         is_update: 是否为更新场景（True 则不保存到持久化文件）
     
     Returns:
@@ -905,11 +933,6 @@ def _register_single_device(device_id: str, reuse_sn: str = None, is_update: boo
         _LOGGER.debug(f"Device {device_id} already registered, skip")
         return False
 
-    # 预生成 SN 用于排除检查（排除列表存储的是 SN，不是 device_id）
-    expected_sn = SNManager.generate_sn(device_id) if not reuse_sn else reuse_sn
-    is_excluded = not is_update and expected_sn in _excluded_device_sns
-    if is_excluded:
-        _LOGGER.info(f"Device {device_id} (sn={expected_sn}) is excluded, will register to SNManager only")
     device_reg = dr.async_get(ghass)
     entity_reg = er.async_get(ghass)
     
@@ -960,57 +983,99 @@ def _register_single_device(device_id: str, reuse_sn: str = None, is_update: boo
 
     _LOGGER.debug(f"Registering device: id={device_id}, name={name}, model={model}, "
                   f"manufacturer={manufacturer}, entities={len(entity_list)}, "
-                  f"reuse_sn={reuse_sn}, is_update={is_update}")
-    
-    # 通过 ServiceRouter 注册（内部会通过 product_matcher 匹配）
-    # 如果匹配失败，register_device 会返回 None
-    vd = service_router.register_device(
-        device_id=device_id,
-        device_name=name,
-        entity_list=entity_list,
-        model=model,
-        manufacturer=manufacturer,
-        reuse_sn=reuse_sn
-    )
+                  f"is_update={is_update}")
 
-    if vd is not None:
+    # 同一 HA 设备可能需要拆成多个华为子设备：
+    # 风扇灯（light + fan）拆成"灯"和"风扇"两个虚拟设备。
+    # 当前 C 库没有风扇设备类型，风扇角色复用灯类产品（PID 002）的
+    # switch/brightness 服务，brightness 表示风速 0-100。
+    roles = build_sub_device_roles(entity_list)
+    if not roles:
+        roles = [{"name": "", "domains": None, "suffix": ""}]
+
+    registered_any = False
+    active_any = False
+    expected_sns = set()
+    new_device = not is_update and device_id not in saved_device_ids
+
+    for role in roles:
+        role_name = role["name"]
+        role_domains = role["domains"]
+        display_name = role_display_name(name, role_name)
+
+        vd = service_router.register_device(
+            device_id=device_id,
+            device_name=name,
+            entity_list=entity_list,
+            model=model,
+            manufacturer=manufacturer,
+            role=role_name,
+            role_domains=role_domains,
+            display_name=display_name,
+        )
+        if vd is None:
+            continue
+
+        registered_any = True
+        expected_sns.add(vd.sn)
+
+        # 排除列表按 SN 记录，因此可以只排除灯或只排除风扇
+        is_excluded = not is_update and vd.sn in _excluded_device_sns
         if is_excluded:
             vd.online = False
-            _LOGGER.info(f"Device registered to SNManager only (excluded): sn={vd.sn}, device_id={device_id}")
-            return True
+            _LOGGER.info(f"Device registered to SNManager only (excluded): "
+                         f"sn={vd.sn}, device_id={device_id}, role={role_name or '-'}")
+            continue
+
+        active_any = True
 
         # 注册到 HiLink
-        if is_update:
-            # 更新场景：设备已在线，status=1
-            service_router.register_device_to_hilink(vd.sn, 1)
-        elif device_id in saved_device_ids:
-            # 已知设备，status=1
+        # 以 SN 是否已注册过为准：新子设备（如刚拆出的风扇）必须用 status=3
+        # 注册一次，再 status=1 确认上线；已注册过的子设备直接 status=1。
+        if _is_known_sn(device_id, role_name, vd.sn):
             service_router.register_device_to_hilink(vd.sn, 1)
         else:
-            # 新设备，先用status=3注册，再调用status=1确认上线
             service_router.register_device_to_hilink(vd.sn, 3)
             service_router.register_device_to_hilink(vd.sn, 1)
-            _save_device_id(device_id)
-
-        registered_device_ids.add(device_id)
+            _save_sn(vd.sn)
 
         if _is_device_disabled(vd.sn):
             vd.online = False
             service_router.register_device_to_hilink(vd.sn, 0)
-            _LOGGER.info(f"Device {device_id} (sn={vd.sn}) is disabled, reported offline")
+            _LOGGER.info(f"Device {device_id} (sn={vd.sn}, role={role_name or '-'}) "
+                         f"is disabled, reported offline")
         else:
             vd.online = True
 
-        _create_bridge_device_entry(vd, name, model, manufacturer)
+        _create_bridge_device_entry(vd, display_name, model, manufacturer)
 
-        _LOGGER.info(f"Device registered, state sync deferred: sn={vd.sn}, device_id={device_id}, "
-                     f"name={name}, model={model}")
+        _LOGGER.info(f"Device registered, state sync deferred: sn={vd.sn}, "
+                     f"device_id={device_id}, role={role_name or '-'}, "
+                     f"name={display_name}, model={model}")
+
+    if registered_any:
+        registered_device_ids.add(device_id)
+        if new_device and active_any:
+            _save_device_id(device_id)
+
+        # 更新场景：清理已经不存在于当前角色集合中的旧子设备
+        if is_update:
+            for old_vd in service_router.sn_manager.get_all_by_device_id(device_id):
+                if old_vd.sn in expected_sns:
+                    continue
+                _LOGGER.info(f"Removing stale sub-device: sn={old_vd.sn}, "
+                             f"role={old_vd.role or '-'}")
+                service_router.register_device_to_hilink(old_vd.sn, 2)
+                service_router.sn_manager.unregister(old_vd.sn)
+                _remove_bridge_device_entry(old_vd.sn)
+                _remove_saved_sn(old_vd.sn)
+
         return True
-    else:
-        # 匹配失败，或匹配到的品类当前 C 侧不支持，静默跳过
-        _LOGGER.debug(f"Device {device_id} ({name}, model={model}) did not match any "
-                      f"C-supported product, skipping")
-        return False
+
+    # 匹配失败，或匹配到的品类当前 C 侧不支持，静默跳过
+    _LOGGER.debug(f"Device {device_id} ({name}, model={model}) did not match any "
+                  f"C-supported product, skipping")
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1151,11 +1216,7 @@ def _handle_device_update_event(device_id: str, event):
         _handle_new_device_event(device_id)
         return
     
-    # 获取旧设备信息
-    vd = service_router.sn_manager.get_by_device_id(device_id)
-    if not vd:
-        return
-    
+    # 获取旧设备信息不再需要：重新注册时按角色生成确定性的 SN
     # 从事件数据中提取设备变化信息
     changes = event.data.get('changes', {})
     
@@ -1170,19 +1231,21 @@ def _handle_device_update_event(device_id: str, event):
     
     _LOGGER.info(f"Device {device_id} key fields changed: {changed_fields}, re-registering")
     
-    # 重新注册设备（复用原 SN）
-    _register_single_device(device_id, reuse_sn=vd.sn, is_update=True)
+    # 重新注册设备（SN 由 device_id + role 确定性生成）
+    _register_single_device(device_id, is_update=True)
 
 
 def _handle_device_remove_event(device_id: str):
     """处理设备删除事件"""
     _LOGGER.info(f"Device removed in HA: device_id={device_id}, reporting offline to HiLink")
     
-    vd = service_router.unregister_device(device_id)
-    if vd is not None:
+    vds = service_router.unregister_device(device_id)
+    if vds:
         registered_device_ids.discard(device_id)
-        _remove_bridge_device_entry(vd.sn)
-        _LOGGER.info(f"Device {device_id} (sn={vd.sn}) reported offline and cleaned up")
+        for vd in vds:
+            _remove_bridge_device_entry(vd.sn)
+            _remove_saved_sn(vd.sn)
+        _LOGGER.info(f"Device {device_id} ({len(vds)} sub-device(s)) reported offline and cleaned up")
     else:
         _LOGGER.debug(f"Device {device_id} was not registered in HiLink, skip offline report")
 
@@ -1211,7 +1274,7 @@ def _create_bridge_device_entry(vd, name: str, model: str, manufacturer: str):
         return
 
     if not name:
-        name = vd.product.name or vd.product.pid or "Bridge Device"
+        name = vd.display_name or vd.product.name or vd.product.pid or "Bridge Device"
 
     ghass.loop.call_soon_threadsafe(
         _create_bridge_device_entry_async, vd, name, model, manufacturer
@@ -1315,6 +1378,7 @@ def _remove_bridge_device_entry_async(sn: str):
             _LOGGER.info(f"Removed device registry entry for sn={sn}")
 
         _disabled_device_sns.discard(sn)
+        _remove_saved_sn(sn)
     except Exception as e:
         _LOGGER.error(f"_remove_bridge_device_entry_async failed for sn={sn}: {e}")
 
@@ -1511,6 +1575,64 @@ def _rewrite_excluded_devices_file():
                 f.write(sn + '\n')
     except Exception as e:
         _LOGGER.error(f"Failed to rewrite excluded devices file: {e}")
+
+
+def _is_known_sn(device_id: str, role: str, sn: str) -> bool:
+    """判断子设备 SN 是否已经注册过
+
+    - 新格式：SN 记录在 registered_sns.txt 中
+    - 兼容旧版：灯角色/未拆分的设备以 device_id 是否在 new_device.txt 中为准
+    """
+    if sn in saved_sns:
+        return True
+    if role in ("", "light") and device_id in saved_device_ids:
+        return True
+    return False
+
+
+def _save_sn(sn: str):
+    """持久化已注册的子设备 SN"""
+    if sn in saved_sns:
+        return
+    saved_sns.add(sn)
+    if ghass is not None:
+        ghass.loop.run_in_executor(None, _write_sn_to_file, sn)
+    elif saved_sns_file:
+        _write_sn_to_file(sn)
+
+
+def _write_sn_to_file(sn: str):
+    """在后台线程中写入 SN"""
+    try:
+        if not saved_sns_file:
+            return
+        with open(saved_sns_file, "a") as f:
+            f.write(sn + '\n')
+    except Exception as e:
+        _LOGGER.error(f"Failed to save sub-device SN {sn}: {e}")
+
+
+def _remove_saved_sn(sn: str):
+    """从持久化文件中移除 SN"""
+    if sn not in saved_sns:
+        return
+    saved_sns.discard(sn)
+    if ghass is not None:
+        ghass.loop.run_in_executor(None, _rewrite_saved_sns_file)
+    elif saved_sns_file:
+        _rewrite_saved_sns_file()
+
+
+def _rewrite_saved_sns_file():
+    """重写 registered_sns.txt"""
+    try:
+        if not saved_sns_file:
+            return
+        with open(saved_sns_file, "w") as f:
+            for sn in sorted(saved_sns):
+                f.write(sn + '\n')
+    except Exception as e:
+        _LOGGER.error(f"Failed to rewrite saved sub-device SNs: {e}")
 
 
 def _load_or_create_ac(device_ac_file: str) -> bytes:

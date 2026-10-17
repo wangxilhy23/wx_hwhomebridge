@@ -50,7 +50,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 name = device_entry.name_by_user or device_entry.name or ""
                 model = device_entry.model or ""
                 manufacturer = device_entry.manufacturer or ""
-            _create_bridge_device_entry_async(vd, name, model, manufacturer)
+            _create_bridge_device_entry_async(vd, vd.display_name or name, model, manufacturer)
 
     _LOGGER.info("wxhwhomebridge config entry setup complete")
     return True

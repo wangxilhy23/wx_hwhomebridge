@@ -31,16 +31,21 @@ class ServiceEntry:
 class VirtualDevice:
     """虚拟设备，对应华为侧的一个逻辑设备（一个 SN）"""
 
-    def __init__(self, sn: str, product: ProductDef, ha_device_id: str):
+    def __init__(self, sn: str, product: ProductDef, ha_device_id: str,
+                 role: str = "", display_name: str = ""):
         """
         Args:
             sn: 设备 SN，由 generate_sn() 生成
             product: 对应的华为产品定义
             ha_device_id: 对应的 HA device_id
+            role: 同一 HA 设备拆分出的子设备角色（如 "light" / "fan"）
+            display_name: 桥接到华为侧时使用的名称
         """
         self.sn: str = sn
         self.product: ProductDef = product
         self.ha_device_id: str = ha_device_id
+        self.role: str = role
+        self.display_name: str = display_name
         self.service_entries: dict[str, ServiceEntry] = {}  # service_id -> ServiceEntry
         self.online: bool = False
         self.switch_state: int = 0  # 缓存 switch 状态（用于 button 映射场景）
@@ -111,7 +116,7 @@ class VirtualDevice:
 
     def __repr__(self):
         return (f"VirtualDevice(sn={self.sn}, product={self.product.pid}, "
-                f"device_id={self.ha_device_id}, "
+                f"device_id={self.ha_device_id}, role={self.role or '-'}, "
                 f"services={len(self.service_entries)})")
 
 
@@ -127,7 +132,8 @@ class SNManager:
 
     def __init__(self):
         self.sn_virtual_device_map: dict[str, VirtualDevice] = {}
-        self.device_virtual_device_map: dict[str, VirtualDevice] = {}
+        # 一个 HA 设备可以拆成多个 VirtualDevice（如风扇灯拆成灯 + 风扇）
+        self.device_virtual_device_map: dict[str, list[VirtualDevice]] = {}
 
     @staticmethod
     def generate_sn(device_id: str) -> str:
@@ -159,17 +165,33 @@ class SNManager:
         sn = virtual_device.sn
         device_id = virtual_device.ha_device_id
 
-        if sn in self.sn_virtual_device_map:
-            existing = self.sn_virtual_device_map[sn]
-            if existing.ha_device_id != device_id:
-                _LOGGER.error(f"SN conflict: {sn} already registered for device {existing.ha_device_id}, "
-                              f"cannot register for {device_id}")
-                return False
+        existing = self.sn_virtual_device_map.get(sn)
+        if existing is not None and existing.ha_device_id != device_id:
+            _LOGGER.error(f"SN conflict: {sn} already registered for device {existing.ha_device_id}, "
+                          f"cannot register for {device_id}")
+            return False
+
+        # 更新场景：同一个 SN 重新注册时先移除旧对象，避免 device 列表重复
+        if existing is not None:
+            self._remove_from_device_map(existing)
 
         self.sn_virtual_device_map[sn] = virtual_device
-        self.device_virtual_device_map[device_id] = virtual_device
-        _LOGGER.info(f"Registered VirtualDevice: sn={sn}, device_id={device_id}")
+        self.device_virtual_device_map.setdefault(device_id, []).append(virtual_device)
+        _LOGGER.info(f"Registered VirtualDevice: sn={sn}, device_id={device_id}, "
+                     f"role={virtual_device.role or '-'}")
         return True
+
+    def _remove_from_device_map(self, virtual_device: VirtualDevice):
+        """从 device → VirtualDevice 列表中移除指定对象"""
+        device_id = virtual_device.ha_device_id
+        devices = self.device_virtual_device_map.get(device_id)
+        if not devices:
+            return
+        self.device_virtual_device_map[device_id] = [
+            item for item in devices if item is not virtual_device
+        ]
+        if not self.device_virtual_device_map[device_id]:
+            self.device_virtual_device_map.pop(device_id, None)
 
     def unregister(self, sn: str) -> Optional[VirtualDevice]:
         """注销 VirtualDevice
@@ -182,7 +204,7 @@ class SNManager:
         """
         vd = self.sn_virtual_device_map.pop(sn, None)
         if vd is not None:
-            self.device_virtual_device_map.pop(vd.ha_device_id, None)
+            self._remove_from_device_map(vd)
             _LOGGER.info(f"Unregistered VirtualDevice: sn={sn}")
         return vd
 
@@ -191,12 +213,17 @@ class SNManager:
         return self.sn_virtual_device_map.get(sn)
 
     def get_by_device_id(self, device_id: str) -> Optional[VirtualDevice]:
-        """根据 device_id 获取 VirtualDevice"""
-        return self.device_virtual_device_map.get(device_id)
+        """根据 device_id 获取第一个 VirtualDevice（兼容旧调用）"""
+        devices = self.device_virtual_device_map.get(device_id)
+        return devices[0] if devices else None
+
+    def get_all_by_device_id(self, device_id: str) -> list:
+        """获取同一 HA 设备拆分出的所有 VirtualDevice"""
+        return list(self.device_virtual_device_map.get(device_id, []))
 
     def get_sn_by_device_id(self, device_id: str) -> Optional[str]:
-        """根据 device_id 获取 SN"""
-        vd = self.device_virtual_device_map.get(device_id)
+        """根据 device_id 获取第一个 VirtualDevice 的 SN"""
+        vd = self.get_by_device_id(device_id)
         if vd is not None:
             return vd.sn
         return None

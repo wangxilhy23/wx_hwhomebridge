@@ -125,6 +125,7 @@ Device enters
 | `service_router.py` | Control routing (on_command), state reporting, device registration |
 | `service_action.py` | ServiceActionDispatcher — dispatches control commands to HA entities |
 | `c_capabilities.py` | C-side capability table: PID → prebuilt `.so` device-type index, `is_c_supported()` gate |
+| `device_roles.py` | Splits one HA device into multiple Huawei sub-devices (fan-light → light + fan) |
 | `hwbridge.py` | Core: C library init, callback registration, state change listeners |
 
 ### Deleted Legacy Files
@@ -143,6 +144,7 @@ Device enters
 | `config/adapters/default/*.json` | Default adapters: standard HA mappings from Huawei profile |
 | `config/adapters/<vendor>/*.json` | Vendor adapters: match_rules + difference overrides |
 | `c_capabilities.py` | PID → C-side device-type index; `009`/`00A`/`00B` are Python-only until the `.so` is rebuilt |
+| `device_roles.py` | Fan-light split rules (`light` + `fan` → two VirtualDevices) |
 | `profile/*.json` | Huawei HiLink device profiles (C-side, **not open source**, gitignored) |
 
 ## Key Design Decisions
@@ -157,6 +159,7 @@ Example: A kettle with switch + temperature sensor → one VirtualDevice with tw
 
 - **Before**: SN = entity_id's last 24 chars → SN : entity = 1:1
 - **After**: SN = hash(device_id) → SN : VirtualDevice = 1:1, VirtualDevice contains N entities
+- **Fan-light split**: a device with both `light` and `fan` is split into two VirtualDevices. The light role keeps `hash(device_id)`, the fan role uses `hash(device_id + "#fan")`. `SNManager` therefore maps one HA device to a list of VirtualDevices.
 
 ### 3. Three-Level Product Matching
 
@@ -331,6 +334,14 @@ Python-only categories (`009` 空调 / `00A` 窗帘 / `00B` 风扇) are fully im
 ### C-side Capability Gate
 `ServiceRouter.register_device()` checks `c_capabilities.is_c_supported(product.pid)` **before** creating a `VirtualDevice`. Unsupported categories are counted in `ServiceRouter.skipped_unsupported` and logged once per `(device_id, pid)`; discovery logs a summary. When the C library gains support, only `PID_INDEX_MAP` needs updating.
 
+### Fan-light Split (one HA device → two Huawei sub-devices)
+`device_roles.build_sub_device_roles()` splits any HA device that has both `light` and `fan` domains:
+
+- light role: binds `light.*`, keeps the original SN, uses PID 002's switch/brightness/cct;
+- fan role: binds `fan.*`, uses `hash(device_id + "#fan")`, reuses PID 002's `switch` / `brightness` services where `brightness` means fan speed 0–100.
+
+`ServiceRouter._build_fan_role_product()` deep-copies PID 002, changes `switch`/`brightness` to `domain: fan`, maps brightness to `action: set_fan_speed`, and removes `cct`. `_report_fan()` / `_build_char_state_json()` treat service id `brightness` as the fan percentage. `registered_sns.txt` persists per-sub-device SNs so a newly split fan is registered with status 3 (not status 1) the first time. Do not remove the SN file while devices are still paired unless you intend to re-register them.
+
 ### Framework is Source of Truth for Huawei Definitions
 `config/product_registry.json` (framework) is the source of truth for Huawei-side definitions (PID, service_type, char_name). Default and vendor adapters only provide HA-side mappings.
 
@@ -341,7 +352,7 @@ When `switch` and `status` services map to the same HA entity (e.g., Midea cooke
 The `route_action` method in `service_router.py` uses declarative `on_command` from `ha_mapping` instead of device-specific if-else branches. All device types share the same generic `_execute_on_command()` method.
 
 ### Saved Device List
-`new_device.txt` persists the list of previously-registered device IDs across restarts. When the bridge goes offline, this file and all config files in `hilink_bridge/config/` are deleted.
+`new_device.txt` persists the list of previously-registered device IDs across restarts. `registered_sns.txt` persists per-sub-device SNs (light and fan roles share one HA device but have different SNs). When the bridge goes offline, these files and all config files in `hilink_bridge/config/` are deleted.
 
 ### Network Interface Selection
 The code uses `psutil.net_if_addrs()` to find the local IP address, skipping `hassio`, `docker*`, and loopback interfaces. This may pick the wrong interface on multi-homed systems.
@@ -398,5 +409,6 @@ Tests do not require Home Assistant; they fake `hass.states` and the C reporting
 - `product_matcher.py` — Three-level matching engine (vendor match_rules → auto_match → skip)
 - `service_action.py` — ServiceActionDispatcher (control command execution)
 - `c_capabilities.py` — PID → C device-type index and `is_c_supported()` gate
+- `device_roles.py` — fan-light split rules and role display names
 - `validate_config.py` — Configuration validation tool
 - `hilink_bridge/adapter/profile_adapter/hilink_profile_bridge.c` — C-side bridge logic

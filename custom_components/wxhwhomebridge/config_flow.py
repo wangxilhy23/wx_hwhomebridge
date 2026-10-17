@@ -196,7 +196,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             if not name and bridge_dev and bridge_dev.name:
                 name = bridge_dev.name
             
-            label = f"{name} ({vd.product.pid})"
+            label = f"{vd.display_name or name} ({vd.product.pid})"
             options_dict[vd.sn] = label
             
             if bridge_dev is not None:
@@ -211,6 +211,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 _add_excluded_device,
                 _remove_excluded_device,
                 _excluded_device_sns,
+                _save_sn,
             )
 
             for vd in all_vds:
@@ -234,9 +235,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     if was_excluded:
                         service_router.register_device_to_hilink(vd.sn, 3)
                         service_router.register_device_to_hilink(vd.sn, 1)
+                        _save_sn(vd.sn)
                         vd.online = True
                         _remove_excluded_device(vd.sn)
-                        _create_bridge_device_entry_async(vd, name, model, manufacturer, clear_disabled=True)
+                        _create_bridge_device_entry_async(vd, vd.display_name or name, model, manufacturer, clear_disabled=True)
                         _LOGGER.info(f"Device re-registered via options flow: sn={vd.sn}")
             
             return self.async_create_entry(title="", data={})

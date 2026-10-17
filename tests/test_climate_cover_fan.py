@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from wxhwhomebridge.c_capabilities import PYTHON_ONLY_PIDS, get_pid_index, is_c_supported
+from wxhwhomebridge.device_roles import build_sub_device_roles, role_display_name
 from wxhwhomebridge.product_matcher import DeviceInfo, ProductMatcher
 from wxhwhomebridge.product_registry import ProductRegistry
 from wxhwhomebridge.service_action import ServiceActionDispatcher
@@ -365,6 +366,156 @@ def test_build_char_state_json(registry):
 # ---------------------------------------------------------------------------
 # C 能力门控
 # ---------------------------------------------------------------------------
+
+def test_fan_light_roles():
+    entities = [
+        {"entity_id": "light.fan_light", "domain": "light", "device_class": None},
+        {"entity_id": "fan.fan_light", "domain": "fan", "device_class": None},
+        {"entity_id": "switch.buzzer", "domain": "switch", "device_class": None},
+    ]
+    roles = build_sub_device_roles(entities)
+    assert [role["name"] for role in roles] == ["light", "fan"]
+    assert role_display_name("雷士风扇灯pro", "light") == "雷士风扇灯pro"
+    assert role_display_name("雷士风扇灯pro", "fan") == "雷士风扇灯pro 风扇"
+
+    only_fan = [{"entity_id": "fan.x", "domain": "fan", "device_class": None}]
+    assert [role["name"] for role in build_sub_device_roles(only_fan)] == ["fan"]
+
+    only_light = [{"entity_id": "light.x", "domain": "light", "device_class": None}]
+    assert build_sub_device_roles(only_light) == []
+
+
+def test_fan_light_split_registration(registry):
+    """风扇灯拆成灯 + 风扇两个 VirtualDevice，共用 PID 002。"""
+    router = ServiceRouter()
+    router.registry = registry
+    router.matcher = ProductMatcher(registry)
+    router.set_hass(FakeHass())
+
+    entities = [
+        {"entity_id": "light.fan_light", "domain": "light", "device_class": None},
+        {"entity_id": "fan.fan_light", "domain": "fan", "device_class": None},
+    ]
+
+    light_vd = router.register_device(
+        device_id="fanlight-device",
+        device_name="雷士风扇灯pro",
+        entity_list=entities,
+        model="leishi.light.eps125",
+        role="light",
+        role_domains={"light"},
+        display_name="雷士风扇灯pro",
+    )
+    fan_vd = router.register_device(
+        device_id="fanlight-device",
+        device_name="雷士风扇灯pro",
+        entity_list=entities,
+        model="leishi.light.eps125",
+        role="fan",
+        role_domains={"fan"},
+        display_name="雷士风扇灯pro 风扇",
+    )
+
+    assert light_vd is not None and fan_vd is not None
+    assert light_vd.sn != fan_vd.sn
+    assert light_vd.product.pid == "002"
+    assert fan_vd.product.pid == "002"
+    assert set(light_vd.service_entries) == {"switch", "brightness", "cct"}
+    assert set(fan_vd.service_entries) == {"switch", "brightness"}
+    assert light_vd.service_entries["switch"].entity_id == "light.fan_light"
+    assert fan_vd.service_entries["switch"].entity_id == "fan.fan_light"
+    assert fan_vd.service_entries["brightness"].entity_id == "fan.fan_light"
+    assert len(router.sn_manager.get_all_by_device_id("fanlight-device")) == 2
+
+    fan_mapping = fan_vd.product.services["brightness"].ha_mapping
+    assert fan_mapping.domain == "fan"
+    assert fan_mapping.action == "set_fan_speed"
+    assert fan_mapping.value_attr == "percentage"
+
+
+def test_fan_role_dispatch_and_reporting(registry):
+    router = ServiceRouter()
+    router.registry = registry
+    router.matcher = ProductMatcher(registry)
+    router.set_hass(FakeHass({
+        "fan.fan_light": FakeState("on", {"percentage": 40}),
+    }))
+
+    entities = [
+        {"entity_id": "light.fan_light", "domain": "light", "device_class": None},
+        {"entity_id": "fan.fan_light", "domain": "fan", "device_class": None},
+    ]
+    light_vd = router.register_device(
+        device_id="fanlight-device",
+        device_name="雷士风扇灯pro",
+        entity_list=entities,
+        model="leishi.light.eps125",
+        role="light",
+        role_domains={"light"},
+    )
+    assert light_vd is not None
+
+    fan_vd = router.register_device(
+        device_id="fanlight-device",
+        device_name="雷士风扇灯pro",
+        entity_list=entities,
+        model="leishi.light.eps125",
+        role="fan",
+        role_domains={"fan"},
+    )
+    assert fan_vd is not None
+    product = fan_vd.product
+
+    calls = []
+    dispatcher = ServiceActionDispatcher()
+    dispatcher._hass = router._hass
+    dispatcher._call_service_async = (
+        lambda domain, service, entity_id, data=None: calls.append(
+            (domain, service, entity_id, data or {})
+        )
+    )
+
+    # 华为侧 brightness 控制 → HA fan.set_percentage
+    assert dispatcher.dispatch(
+        fan_vd.sn, "fan.fan_light",
+        product.services["brightness"].ha_mapping, {"brightness": 60},
+    )
+    assert calls[-1] == ("fan", "set_percentage", "fan.fan_light", {"percentage": 60})
+
+    # 风扇开关
+    assert dispatcher.dispatch(
+        fan_vd.sn, "fan.fan_light",
+        product.services["switch"].ha_mapping, {"on": 0},
+    )
+    assert calls[-1] == ("fan", "turn_off", "fan.fan_light", {})
+
+    recorded = []
+    router._update_hw_bridge_status = (
+        lambda sn, svc_id, payload: recorded.append((svc_id, payload))
+    )
+
+    router._report_by_type(
+        fan_vd.sn, "switch", product.services["switch"], FakeState("on"),
+    )
+    assert recorded[-1] == ("switch", {"on": 1})
+
+    router._report_by_type(
+        fan_vd.sn, "brightness", product.services["brightness"],
+        FakeState("on", {"percentage": 60}),
+    )
+    assert recorded[-1] == ("brightness", {"brightness": 60})
+
+    char_state = json.loads(router._build_char_state_json(
+        "brightness", product.services["brightness"],
+        FakeState("on", {"percentage": 60}), "fan.fan_light",
+    ))
+    assert char_state == {"brightness": 60}
+
+    # 注销时两个子设备都要清理
+    removed = router.unregister_device("fanlight-device")
+    assert len(removed) == 2
+    assert router.sn_manager.get_all_by_device_id("fanlight-device") == []
+
 
 def test_c_capability_table():
     assert PYTHON_ONLY_PIDS == {"009", "00A", "00B"}

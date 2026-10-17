@@ -315,6 +315,38 @@ value_mapping 定义在**适配器层**的 service 配置中：
 
 ---
 
+## 示例8：风扇灯拆分（light + fan）
+
+同一台 HA 设备同时有 `light` 和 `fan` 实体时，集成会拆成两个华为子设备：
+
+| 角色 | 绑定实体 | SN | 产品 | 华为侧服务 |
+| --- | --- | --- | --- | --- |
+| `light` | `light.*` | `hash(device_id)` | 002 | `switch` / `brightness` / `cct` |
+| `fan` | `fan.*` | `hash(device_id + "#fan")` | 002 | `switch` / `brightness`（风速 0–100） |
+
+风扇角色复用 PID 002 的 `brightness` 服务表示风速，`ServiceRouter._build_fan_role_product()` 会把：
+
+```json
+{
+    "brightness": {
+        "domain": "fan",
+        "action": "set_fan_speed",
+        "value_attr": "percentage"
+    }
+}
+```
+
+控制时华为下发的 `{"brightness": 60}` 会转成 `fan.set_percentage(60)`；上报时读取 `fan` 实体的 `percentage`，再以 `{"brightness": 60}` 上报。
+
+注意事项：
+
+- 当前预编译 `.so` 没有风扇设备类型，风扇子设备在华为侧仍显示为灯类设备；
+- `cct` 服务在风扇角色中被移除，避免无意义的色温控制；
+- 风扇的色温、摆风、模式等能力暂不映射；
+- `registered_sns.txt` 记录每个子设备的 SN，新增风扇子设备首次会用 `status=3` 注册。
+
+---
+
 ## 实现细节
 
 ### 核心类
