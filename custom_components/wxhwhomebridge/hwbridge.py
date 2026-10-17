@@ -474,6 +474,13 @@ def OnDevStatusCB(sn_data, svcId):
             _LOGGER.debug(f"OnDevStatusCB: {domain} entity {entity_id}, using cached switch_state={vd.switch_state}")
             return vd.switch_state
         
+        # fanSpeed 服务：风扇风速百分比
+        if svc_id_decoded == "fanSpeed" and domain == "fan":
+            if state:
+                percentage = state.attributes.get('percentage') or 0
+                return max(0, min(100, int(percentage)))
+            return 0
+
         # brightness 服务：风扇角色下代表风速百分比
         if svc_id_decoded == "brightness" and domain == "fan":
             if state and state.state == 'on':

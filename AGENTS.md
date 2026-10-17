@@ -340,7 +340,7 @@ Python-only categories (`009` 空调 / `00A` 窗帘 / `00B` 风扇) are fully im
 - light role: binds `light.*`, keeps the original SN, uses PID 002's switch/brightness/cct;
 - fan role: binds `fan.*`, uses `hash(device_id + "#fan")`, reuses PID 002's `switch` / `brightness` services where `brightness` means fan speed 0–100.
 
-`ServiceRouter._build_fan_role_product()` deep-copies PID 002, changes `switch`/`brightness` to `domain: fan`, maps brightness to `action: set_fan_speed`, and removes `cct`. `_report_fan()` / `_build_char_state_json()` treat service id `brightness` as the fan percentage. `registered_sns.txt` persists per-sub-device SNs so a newly split fan is registered with status 3 (not status 1) the first time. Do not remove the SN file while devices are still paired unless you intend to re-register them.
+`ServiceRouter._build_fan_role_product()` prefers the native `00B` fan product when `c_capabilities.is_c_supported("00B")` becomes true; otherwise it deep-copies PID 002, changes `switch`/`brightness` to `domain: fan`, maps brightness to `action: set_fan_speed`, and removes `cct`. `_report_fan()` / `_build_char_state_json()` treat service id `brightness` as the fan percentage. `registered_sns.txt` persists per-sub-device SNs so a newly split fan is registered with status 3 (not status 1) the first time. Do not remove the SN file while devices are still paired unless you intend to re-register them.
 
 ### Framework is Source of Truth for Huawei Definitions
 `config/product_registry.json` (framework) is the source of truth for Huawei-side definitions (PID, service_type, char_name). Default and vendor adapters only provide HA-side mappings.

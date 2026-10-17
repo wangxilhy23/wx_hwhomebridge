@@ -517,6 +517,40 @@ def test_fan_role_dispatch_and_reporting(registry):
     assert router.sn_manager.get_all_by_device_id("fanlight-device") == []
 
 
+def test_fan_role_prefers_native_fan_product(registry, monkeypatch):
+    """C 侧支持 00B 时，风扇角色应自动改用真正的风扇产品。"""
+    import wxhwhomebridge.service_router as service_router_module
+
+    monkeypatch.setattr(
+        service_router_module,
+        "is_c_supported",
+        lambda pid: pid in ("002", "00B"),
+    )
+
+    router = ServiceRouter()
+    router.registry = registry
+    router.matcher = ProductMatcher(registry)
+    router.set_hass(FakeHass())
+
+    fan_vd = router.register_device(
+        device_id="fanlight-device",
+        device_name="雷士风扇灯pro",
+        entity_list=[
+            {"entity_id": "light.fan_light", "domain": "light", "device_class": None},
+            {"entity_id": "fan.fan_light", "domain": "fan", "device_class": None},
+        ],
+        model="leishi.light.eps125",
+        role="fan",
+        role_domains={"fan"},
+        display_name="雷士风扇灯pro 风扇",
+    )
+
+    assert fan_vd is not None
+    assert fan_vd.product.pid == "00B"
+    assert set(fan_vd.service_entries) == {"switch", "fanSpeed"}
+    assert fan_vd.service_entries["fanSpeed"].entity_id == "fan.fan_light"
+
+
 def test_c_capability_table():
     assert PYTHON_ONLY_PIDS == {"009", "00A", "00B"}
     assert get_pid_index("001") == 0

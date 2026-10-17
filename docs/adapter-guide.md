@@ -341,6 +341,7 @@ value_mapping 定义在**适配器层**的 service 配置中：
 注意事项：
 
 - 当前预编译 `.so` 没有风扇设备类型，风扇子设备在华为侧仍显示为灯类设备；
+- C 侧支持 `00B` 后，`_build_fan_role_product()` 会自动改用真正的风扇产品（`switch` / `fanSpeed`）；
 - `cct` 服务在风扇角色中被移除，避免无意义的色温控制；
 - 风扇的色温、摆风、模式等能力暂不映射；
 - `registered_sns.txt` 记录每个子设备的 SN，新增风扇子设备首次会用 `status=3` 注册。

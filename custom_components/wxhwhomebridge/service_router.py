@@ -194,12 +194,19 @@ class ServiceRouter:
     def _build_fan_role_product(self, product: ProductDef) -> ProductDef:
         """构造风扇角色的产品定义
 
-        当前预编译 C 库没有风扇设备类型，因此复用灯类产品的服务 ID：
+        优先使用真正的 00B 风扇产品（需要 C 侧支持 + 华为风扇 PID）；
+        当前预编译 C 库没有风扇设备类型，此时回退为复用灯类产品
+        （PID 002）的服务 ID：
         - switch     → 风扇开关
         - brightness → 风扇风速（0-100）
 
         返回的是深拷贝，不会影响灯角色的产品定义。
         """
+        native_fan = self.registry.get_product("00B")
+        if native_fan is not None and is_c_supported("00B"):
+            _LOGGER.info("C side supports product 00B, using real fan product for role 'fan'")
+            return self.registry.merge(native_fan, None)
+
         fan_product = copy.deepcopy(product)
         fan_product.name = f"{product.name}（风扇）" if product.name else "风扇"
 
