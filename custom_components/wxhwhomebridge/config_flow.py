@@ -1,7 +1,7 @@
-"""Config flow for HuaweiHome Bridge
+"""Config flow for WX HuaweiHome Bridge
 
 配置流程：
-1. 用户在HA设置中点击"添加集成" → 搜索"hwhomebridge"
+1. 用户在HA设置中点击"添加集成" → 搜索"wxhwhomebridge"
 2. 点击进入配置页面 → 显示提示页面（无PIN码）
 3. 用户勾选确认后点击"提交" → 完成集成配置，启动网关
 4. 用户再次点击"配置"按钮 → 选择功能：PIN绑定 或 设备管理
@@ -26,7 +26,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for HuaweiHome Bridge.
+    """Handle a config flow for WX HuaweiHome Bridge.
     
     配置流程处理器：
     - 首次配置：显示提示页面，完成后启动网关

@@ -11,14 +11,14 @@ from pathlib import Path
 
 import pytest
 
-from hwhomebridge.c_capabilities import PYTHON_ONLY_PIDS, get_pid_index, is_c_supported
-from hwhomebridge.product_matcher import DeviceInfo, ProductMatcher
-from hwhomebridge.product_registry import ProductRegistry
-from hwhomebridge.service_action import ServiceActionDispatcher
-from hwhomebridge.service_router import ServiceRouter
+from wxhwhomebridge.c_capabilities import PYTHON_ONLY_PIDS, get_pid_index, is_c_supported
+from wxhwhomebridge.product_matcher import DeviceInfo, ProductMatcher
+from wxhwhomebridge.product_registry import ProductRegistry
+from wxhwhomebridge.service_action import ServiceActionDispatcher
+from wxhwhomebridge.service_router import ServiceRouter
 
 ROOT = Path(__file__).resolve().parents[1]
-COMPONENT = ROOT / "custom_components" / "hwhomebridge"
+COMPONENT = ROOT / "custom_components" / "wxhwhomebridge"
 
 
 class FakeState:
@@ -310,7 +310,7 @@ def test_cover_and_fan_reporting(registry):
 
 
 def test_payload_key_routing(registry):
-    from hwhomebridge.virtual_device import ServiceEntry, VirtualDevice
+    from wxhwhomebridge.virtual_device import ServiceEntry, VirtualDevice
 
     router = ServiceRouter()
 

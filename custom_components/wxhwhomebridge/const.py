@@ -1,6 +1,6 @@
-"""Constants for hwhomebridge integration."""
+"""Constants for wxhwhomebridge integration."""
 
-DOMAIN = "hwhomebridge"
+DOMAIN = "wxhwhomebridge"
 
 # 来自这些集成（platform）的实体不做映射，避免循环接入。
 # 例如社区插件 ha-huawei-smarthome（domain: huawei_smarthome）将华为设备接入 HA，

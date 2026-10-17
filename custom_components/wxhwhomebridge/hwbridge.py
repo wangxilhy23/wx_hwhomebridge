@@ -52,7 +52,7 @@ lib = None
 service_router = None  # ServiceRouter 实例（替代原来的 light_plt/fan_plt 等）
 
 hilink_bridge_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hilink_bridge")
-# 运行时用户态目录，指向 HA 持久存储区 .storage/hwhomebridge/
+# 运行时用户态目录，指向 HA 持久存储区 .storage/wxhwhomebridge/
 # C SDK (HILINK_CONFIG_DIR)、device_ac、new_device.txt 均落此目录
 hilink_config_dir = None
 hilink_cfg_files = ("bridge.cfg",
@@ -127,7 +127,7 @@ async def start_hw_hilink_bridge(hass: HomeAssistant):
 
     global hilink_config_dir, saved_device_file, excluded_devices_file
 
-    hilink_config_dir = hass.config.path('.storage', 'hwhomebridge', 'config')
+    hilink_config_dir = hass.config.path('.storage', 'wxhwhomebridge', 'config')
 
     os.makedirs(hilink_config_dir, exist_ok=True)
 
@@ -143,7 +143,7 @@ async def start_hw_hilink_bridge(hass: HomeAssistant):
     os.environ['HILINK_CONFIG_DIR'] = hilink_config_dir + '/'
     saved_device_file = os.path.join(hilink_config_dir, 'new_device.txt')
     excluded_devices_file = os.path.join(hilink_config_dir, 'excluded_devices.txt')
-    _LOGGER.info(f"hwhomebridge runtime dir: {hilink_config_dir}")
+    _LOGGER.info(f"wxhwhomebridge runtime dir: {hilink_config_dir}")
 
     # 加载 C 库（按 CPU 架构选择对应的 so）
     machine = platform.machine() or ""

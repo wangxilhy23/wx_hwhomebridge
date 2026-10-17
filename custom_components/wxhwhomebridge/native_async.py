@@ -47,7 +47,7 @@ _LOGGER = logging.getLogger(__name__)
 
 # 单线程执行器：串行执行阻塞式原生调用
 _sdk_executor = concurrent.futures.ThreadPoolExecutor(
-    max_workers=1, thread_name_prefix="hwhomebridge-sdk"
+    max_workers=1, thread_name_prefix="wxhwhomebridge-sdk"
 )
 
 # 独立单线程执行器：只跑 SDK 回调的处理体。
@@ -55,7 +55,7 @@ _sdk_executor = concurrent.futures.ThreadPoolExecutor(
 # 回调发生时可能被 SDK 持着的那把锁。若两者共用一条线程，一旦该调用卡住，
 # 后续所有设备注册（HilinkSyncBrgDevStatus）都会永久排队，桥接静默失效。
 _callback_executor = concurrent.futures.ThreadPoolExecutor(
-    max_workers=1, thread_name_prefix="hwhomebridge-cb"
+    max_workers=1, thread_name_prefix="wxhwhomebridge-cb"
 )
 
 # 单次等待的默认上限（秒）

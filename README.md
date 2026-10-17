@@ -1,8 +1,10 @@
-# hwhomebridge
+# wxhwhomebridge
 
 > **改造说明**
 >
 > 本仓库基于上游项目 [Wangxiaokang666-666/ha_hwhomebridge](https://github.com/Wangxiaokang666-666/ha_hwhomebridge) 改造而来，当前仓库地址为 [wangxilhy23/wx_hwhomebridge](https://github.com/wangxilhy23/wx_hwhomebridge)。
+>
+> 为与上游集成区分，本仓库的 Home Assistant 集成 domain 为 **`wxhwhomebridge`**（目录 `custom_components/wxhwhomebridge`），显示名称为 **WX HuaweiHome Bridge**，可与上游 `hwhomebridge` 区分并由 HACS 独立识别。
 >
 > 本仓库沿用上游的桥接架构、配置结构与使用方式，并在其代码基础上进行二次改造与维护（详见下文「与上游项目的关系」）。
 
@@ -20,7 +22,7 @@
 > - **合规责任**：使用者有责任确保在本地区的法律法规框架下合法使用本项目。
 ## 简介
 
-**hwhomebridge** 是一个 **[Home Assistant](https://www.home-assistant.io/)** 自定义集成，具有以下功能：
+**wxhwhomebridge** 是一个 **[Home Assistant](https://www.home-assistant.io/)** 自定义集成，具有以下功能：
 
 - 将接入 HA 平台的设备接入到华为鸿蒙智家
 - 接入华为生态后，可通过 **华为智慧生活 APP** 或 **小艺** 控制设备
@@ -60,7 +62,7 @@
 1. 在 C 侧新增 `climate` / `cover` / `fan` 的设备类型与 SvcInfo（服务 ID、characteristicName、enumList）；
 2. 由华为分配并注册对应的 prodId；
 3. 重新编译 `libhilink_bridge.so` 并替换 `hilink_bridge/lib/<arch>/` 下的文件；
-4. 把新 PID → C 侧索引加入 `custom_components/hwhomebridge/c_capabilities.py` 的 `PID_INDEX_MAP`。
+4. 把新 PID → C 侧索引加入 `custom_components/wxhwhomebridge/c_capabilities.py` 的 `PID_INDEX_MAP`。
 
 完成后无需修改控制/上报代码，门控会自动放行。
 
@@ -99,7 +101,7 @@ https://github.com/wangxilhy23/wx_hwhomebridge
 
 ### 方式2：手动安装
 
-1. 下载本仓库到 `config/custom_components/` 目录下
+1. 下载本仓库，将 `custom_components/wxhwhomebridge/` 放到 HA 配置目录的 `config/custom_components/wxhwhomebridge/`
 2. 重启 Home Assistant
 
 
@@ -109,7 +111,7 @@ https://github.com/wangxilhy23/wx_hwhomebridge
 
 1. 进入 Home Assistant 后台
 2. ⚙️ 设置 > 设备与服务 > 添加集成
-3. 搜索 `hwhomebridge`
+3. 搜索 `WX HuaweiHome Bridge`（或 `wxhwhomebridge`）
 4. 点击安装，按照提示完成配置
 
 ![安装集成](docs/images/install_integration.jpg)
@@ -138,7 +140,7 @@ https://github.com/wangxilhy23/wx_hwhomebridge
         ↓
        SDK 
         ↓
-  hwhomebridge
+  wxhwhomebridge
         ↓
   Home Assistant
         ↓
@@ -195,7 +197,7 @@ config/
 ### 项目结构
 
 ```
-hwhomebridge/
+wxhwhomebridge/
 ├── __init__.py              # 集成入口
 ├── config_flow.py           # 配置流程
 ├── hwbridge.py              # 核心桥接逻辑（C 库初始化、回调注册、状态监听）
@@ -452,7 +454,7 @@ python validate_config.py
 本仓库（[wangxilhy23/wx_hwhomebridge](https://github.com/wangxilhy23/wx_hwhomebridge)）是上游项目 [Wangxiaokang666-666/ha_hwhomebridge](https://github.com/Wangxiaokang666-666/ha_hwhomebridge) 的改造版本：
 
 - **上游项目**：提供 hwhomebridge 的原始实现，包括 HiLink SDK 桥接、三层配置架构与设备适配框架。
-- **本仓库**：在上游代码基础上进行二次改造与维护，保留原有功能、目录结构与配置方式，并在此基础上持续调整。
+- **本仓库**：在上游代码基础上进行二次改造与维护，集成 domain 为 `wxhwhomebridge`，显示名称为 WX HuaweiHome Bridge，可与上游 `hwhomebridge` 区分并由 HACS 独立识别。
 - **安装与反馈**：请使用本仓库地址安装，问题反馈与代码贡献请提交到本仓库的 Issue / Pull Request。
 
 如需同步上游项目的更新，可将上游添加为远程仓库后合并：
@@ -470,6 +472,7 @@ git merge upstream/main
 - 华为 PID 和 C 侧代码暂时无法动态扩展
 - 009 / 00A / 00B（空调 / 窗帘 / 风扇）目前只有 Python 侧实现，需 C 侧重编译并注册华为 PID 后才会真正接入
 - 若设备未出现在华为智慧生活，请先检查日志中是否有 `不支持该品类，已跳过` 的提示
+- 从旧版 `hwhomebridge` 升级到 `wxhwhomebridge` 属于 domain 变更：先删除旧的 `custom_components/hwhomebridge/` 和旧集成条目，再安装本版本；运行时数据目录改为 `.storage/wxhwhomebridge/`，需要重新进行 PIN 绑定
 
 ## 许可证
 

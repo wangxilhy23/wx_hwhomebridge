@@ -1,4 +1,4 @@
-"""hwhomebridge integration entry point."""
+"""wxhwhomebridge integration entry point."""
 
 import logging
 
@@ -13,19 +13,19 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup(hass: HomeAssistant, config: dict):
-    """Set up the hwhomebridge component.
+    """Set up the wxhwhomebridge component.
 
     Called by HA for both YAML and config_flow setups.
     Starts the HiLink bridge.
     """
-    _LOGGER.info("async_setup called, starting hwhomebridge integration")
+    _LOGGER.info("async_setup called, starting wxhwhomebridge integration")
     hass.data.setdefault(DOMAIN, {})
     await start_hw_hilink_bridge(hass)
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
-    """Set up hwhomebridge from a config entry.
+    """Set up wxhwhomebridge from a config entry.
 
     Bridged sub-devices are created dynamically by hwbridge.py as they
     are registered to HiLink. If devices were already discovered and
@@ -52,7 +52,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 manufacturer = device_entry.manufacturer or ""
             _create_bridge_device_entry_async(vd, name, model, manufacturer)
 
-    _LOGGER.info("hwhomebridge config entry setup complete")
+    _LOGGER.info("wxhwhomebridge config entry setup complete")
     return True
 
 
@@ -75,13 +75,13 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     if lang.startswith("zh"):
         notif_title = "请重启 Home Assistant"
         notif_message = (
-            "HuaweiHome Bridge 已删除，如需重新添加本集成，请先重启 Home Assistant。"
+            "WX HuaweiHome Bridge 已删除，如需重新添加本集成，请先重启 Home Assistant。"
             "否则本集成将无法重新正常工作。"
         )
     else:
         notif_title = "Please restart Home Assistant"
         notif_message = (
-            "HuaweiHome Bridge has been removed. If you want to re-add this integration, "
+            "WX HuaweiHome Bridge has been removed. If you want to re-add this integration, "
             "please restart Home Assistant first, otherwise the integration will not work properly."
         )
 
@@ -93,7 +93,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
             {
                 "title": notif_title,
                 "message": notif_message,
-                "notification_id": "hwhomebridge_restart_required",
+                "notification_id": "wxhwhomebridge_restart_required",
             },
             blocking=True,
         )
@@ -103,4 +103,4 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     finally:
         # 确保无论通知是否成功，都执行清理
         await hass.async_add_executor_job(stop_hw_hilink_bridge, hass)
-        _LOGGER.info("hwhomebridge integration removed, gateway cleaned up from cloud")
+        _LOGGER.info("wxhwhomebridge integration removed, gateway cleaned up from cloud")

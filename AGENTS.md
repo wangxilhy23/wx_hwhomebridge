@@ -1,4 +1,4 @@
-# AGENTS.md — hwhomebridge
+# AGENTS.md — wxhwhomebridge
 
 ## What This Is
 
@@ -6,7 +6,7 @@ A Home Assistant custom integration that bridges devices into the Huawei HiLink 
 
 **Architecture Evolution**: Originally designed for Xiaomi/mi devices (via the `xiaomi_miot` integration), now refactored to support **any HA device** through generic discovery mechanisms.
 
-The architecture is **Python (business logic) + C (HiLink SDK via ctypes FFI)**, running as a HA custom component in `custom_components/hwhomebridge/`.
+The architecture is **Python (business logic) + C (HiLink SDK via ctypes FFI)**, running as a HA custom component in `custom_components/wxhwhomebridge/`.
 
 ## Architecture Overview
 
@@ -356,9 +356,9 @@ make
 ```
 
 ### Deployment
-The entire `hwhomebridge/` directory is deployed to the HA custom components path:
+The entire `wxhwhomebridge/` directory is deployed to the HA custom components path:
 ```
-<HA config>/custom_components/hwhomebridge/
+<HA config>/custom_components/wxhwhomebridge/
 ```
 
 ### Runtime Dependencies
@@ -377,7 +377,7 @@ Validates framework + default + vendor adapter JSON files for consistency (PID r
 python -m pip install -r requirements_test.txt
 python -m pytest tests -q
 ```
-Tests do not require Home Assistant; they fake `hass.states` and the C reporting entry points. `tests/conftest.py` registers the component directory as a top-level `hwhomebridge` package so `__init__.py` (which imports HA) is not executed.
+Tests do not require Home Assistant; they fake `hass.states` and the C reporting entry points. `tests/conftest.py` registers the component directory as a top-level `wxhwhomebridge` package so `__init__.py` (which imports HA) is not executed.
 
 ## Configuration
 
@@ -385,7 +385,7 @@ Tests do not require Home Assistant; they fake `hass.states` and the C reporting
 - `config/adapters/default/*.json` — Default adapters: standard HA mappings from Huawei profile
 - `config/adapters/<vendor>/*.json` — Vendor adapters: match_rules + difference overrides
 - `hilink_bridge/hilink_bridge.cfg` — HiLink bridge config (productId, deviceTypeId, workdir, udpport, productSN)
-- `manifest.json` — HA integration metadata (domain: `hwhomebridge`)
+- `manifest.json` — HA integration metadata (domain: `wxhwhomebridge`)
 
 ## Key Files for Reference
 
