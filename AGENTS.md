@@ -4,6 +4,8 @@
 
 A Home Assistant custom integration that bridges devices into the Huawei HiLink ecosystem. Users control devices through the Huawei Smart Life app or Huawei voice assistant.
 
+The integration domain is **`wxhwhomebridge`** (display name **WX HuaweiHome Bridge**), deliberately different from the upstream `hwhomebridge` domain so HACS can identify both repositories independently.
+
 **Architecture Evolution**: Originally designed for Xiaomi/mi devices (via the `xiaomi_miot` integration), now refactored to support **any HA device** through generic discovery mechanisms.
 
 The architecture is **Python (business logic) + C (HiLink SDK via ctypes FFI)**, running as a HA custom component in `custom_components/wxhwhomebridge/`.
