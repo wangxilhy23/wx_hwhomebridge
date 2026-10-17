@@ -1,5 +1,11 @@
 # hwhomebridge
 
+> **改造说明**
+>
+> 本仓库基于上游项目 [Wangxiaokang666-666/ha_hwhomebridge](https://github.com/Wangxiaokang666-666/ha_hwhomebridge) 改造而来，当前仓库地址为 [wangxilhy23/wx_hwhomebridge](https://github.com/wangxilhy23/wx_hwhomebridge)。
+>
+> 本仓库沿用上游的桥接架构、配置结构与使用方式，并在其代码基础上进行二次改造与维护（详见下文「与上游项目的关系」）。
+
 > **⚠️ WARNING**
 > 
 > 本项目非Home Assistant官方集成，仅实测了部分厂家设备，处于持续迭代中，存在适配兼容与稳定性风险，**请勿直接用于生产环境**。
@@ -57,7 +63,7 @@
 1. 在 HACS 中添加自定义仓库：
 
 ```
-https://github.com/Wangxiaokang666-666/ha_hwhomebridge
+https://github.com/wangxilhy23/wx_hwhomebridge
 ```
 
 2. 点击下载并安装
@@ -407,6 +413,22 @@ python validate_config.py
 ```
 
 超出范围的值会自动裁剪到边界值。
+
+## 与上游项目的关系
+
+本仓库（[wangxilhy23/wx_hwhomebridge](https://github.com/wangxilhy23/wx_hwhomebridge)）是上游项目 [Wangxiaokang666-666/ha_hwhomebridge](https://github.com/Wangxiaokang666-666/ha_hwhomebridge) 的改造版本：
+
+- **上游项目**：提供 hwhomebridge 的原始实现，包括 HiLink SDK 桥接、三层配置架构与设备适配框架。
+- **本仓库**：在上游代码基础上进行二次改造与维护，保留原有功能、目录结构与配置方式，并在此基础上持续调整。
+- **安装与反馈**：请使用本仓库地址安装，问题反馈与代码贡献请提交到本仓库的 Issue / Pull Request。
+
+如需同步上游项目的更新，可将上游添加为远程仓库后合并：
+
+```bash
+git remote add upstream https://github.com/Wangxiaokang666-666/ha_hwhomebridge.git
+git fetch upstream
+git merge upstream/main
+```
 
 ## 注意事项
 
