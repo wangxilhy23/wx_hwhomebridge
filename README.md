@@ -43,6 +43,34 @@
 4. 🦟 灭蚊器(006)
 5. 🍚 电饭煲(007)
 6. 🔌 断路器(008)
+7. ❄️ 空调(009) — Python 侧已适配，待 C 侧支持
+8. 🪟 窗帘(00A) — Python 侧已适配，待 C 侧支持
+9. 🌀 风扇(00B) — Python 侧已适配，待 C 侧支持
+
+### C 侧能力边界（009 / 00A / 00B）
+
+`009`、`00A`、`00B` 是本仓库的**内部占位 PID**。Python 侧已经完成匹配、控制下发与状态上报，但当前随插件发布的 `libhilink_bridge.so` 是预编译库，设备类型表只包含 001–008，服务词表中也没有 climate / cover / fan 相关服务。因此：
+
+- 这些设备会被 HA 识别并匹配到对应产品，但**不会注册到华为侧**，不会出现在华为智慧生活 / 小艺中；
+- 设备发现日志会提示 `当前 libhilink_bridge.so 不支持该品类，已跳过`；
+- 这是有意的安全降级，避免在 HA 中留下无法同步的幽灵设备。
+
+要真正启用这三个品类，需要：
+
+1. 在 C 侧新增 `climate` / `cover` / `fan` 的设备类型与 SvcInfo（服务 ID、characteristicName、enumList）；
+2. 由华为分配并注册对应的 prodId；
+3. 重新编译 `libhilink_bridge.so` 并替换 `hilink_bridge/lib/<arch>/` 下的文件；
+4. 把新 PID → C 侧索引加入 `custom_components/hwhomebridge/c_capabilities.py` 的 `PID_INDEX_MAP`。
+
+完成后无需修改控制/上报代码，门控会自动放行。
+
+| PID | 品类 | 已实现的华为侧服务 |
+| --- | --- | --- |
+| 009 | 空调 | `switch` / `mode` / `temperature`（目标温度）/ `fanSpeed` |
+| 00A | 窗帘 | `switch`（开/关）/ `position`（0–100 开合度） |
+| 00B | 风扇 | `switch` / `fanSpeed`（0–100 风速） |
+
+> 服务 ID、characteristicName 与枚举值目前是占位契约，真实 C profile 到位后只需调整 `config/adapters/default/*.json` 或厂家适配器，无需改 Python 逻辑。
 
 ## 环境要求
 
@@ -160,7 +188,9 @@ config/
 3. 都不匹配 → 跳过设备
 ```
 
-**标准品类**（灯、压力传感器、断路器）配了 `auto_match`，新厂家设备无需写适配器即可自动接入。**复杂品类**（电饭煲、电水壶、灭蚊器）必须通过厂家适配器匹配。
+**标准品类**（灯、压力传感器、断路器，以及 009/00A/00B）配了 `auto_match`，新厂家设备无需写适配器即可自动匹配。**复杂品类**（电饭煲、电水壶、灭蚊器）必须通过厂家适配器匹配。
+
+> 009/00A/00B 匹配后仍会被 C 能力门控跳过，直到预编译 `.so` 支持对应设备类型。
 
 ### 项目结构
 
@@ -174,6 +204,7 @@ hwhomebridge/
 ├── product_registry.py      # 三层配置加载（框架 + 默认 + 厂家）、合并逻辑
 ├── product_matcher.py       # 三级匹配引擎（match_rules → auto_match → skip）
 ├── service_action.py        # 服务操作分发（控制命令执行）
+├── c_capabilities.py        # C 侧能力表（PID → 设备类型索引、能力门控）
 ├── pin_manager.py           # PIN 码管理
 ├── const.py                 # 常量定义
 ├── validate_config.py       # 配置验证工具
@@ -182,7 +213,9 @@ hwhomebridge/
 │   └── adapters/                      # 适配器目录
 │       ├── default/                   # 默认适配器
 │       ├── xiaomi/                    # 小米适配器
-│       └── midea/                     # 美的适配器
+│       ├── midea/                     # 美的适配器
+│       ├── linp/                      # 领普适配器
+│       └── dmaker/                    # 追觅适配器
 └── translations/            # 国际化翻译
 ```
 
@@ -435,6 +468,8 @@ git merge upstream/main
 - PIN 码有效期为 **5分钟**，超时需重新获取
 - 集成删除后，如需重新添加，请先重启 Home Assistant，否则集成将无法重新正常工作
 - 华为 PID 和 C 侧代码暂时无法动态扩展
+- 009 / 00A / 00B（空调 / 窗帘 / 风扇）目前只有 Python 侧实现，需 C 侧重编译并注册华为 PID 后才会真正接入
+- 若设备未出现在华为智慧生活，请先检查日志中是否有 `不支持该品类，已跳过` 的提示
 
 ## 许可证
 
@@ -445,4 +480,11 @@ Apache 2.0 License
 欢迎提交 Issue 和 Pull Request！
 
 新增厂家适配器时，请按 `config/adapters/<vendor>/<category>.json` 的目录结构组织，并运行 `python validate_config.py` 验证配置正确性。
+
+提交代码前建议同时运行单元测试：
+
+```bash
+python -m pip install -r requirements_test.txt
+python -m pytest tests -q
+```
 

@@ -122,6 +122,7 @@ Device enters
 | `virtual_device.py` | VirtualDevice aggregation unit, SN management |
 | `service_router.py` | Control routing (on_command), state reporting, device registration |
 | `service_action.py` | ServiceActionDispatcher — dispatches control commands to HA entities |
+| `c_capabilities.py` | C-side capability table: PID → prebuilt `.so` device-type index, `is_c_supported()` gate |
 | `hwbridge.py` | Core: C library init, callback registration, state change listeners |
 
 ### Deleted Legacy Files
@@ -139,6 +140,7 @@ Device enters
 | `config/product_registry.json` | Framework: PID, service_type, char_name, auto_match |
 | `config/adapters/default/*.json` | Default adapters: standard HA mappings from Huawei profile |
 | `config/adapters/<vendor>/*.json` | Vendor adapters: match_rules + difference overrides |
+| `c_capabilities.py` | PID → C-side device-type index; `009`/`00A`/`00B` are Python-only until the `.so` is rebuilt |
 | `profile/*.json` | Huawei HiLink device profiles (C-side, **not open source**, gitignored) |
 
 ## Key Design Decisions
@@ -291,7 +293,7 @@ Create a vendor adapter with full service overrides for fields that differ from 
 1. **Framework** (`config/product_registry.json`): Add PID + service_type + char_name
 2. **Default adapter** (`config/adapters/default/<PID>.json`): Add standard HA mapping
 3. **C side**: Add PID to `map_prodIds[]` etc., define `_XXX_SvcInfo`, add profile JSON, rebuild
-4. **PID-to-index**: Add mapping in `hwbridge.py:_get_pid_index()`
+4. **PID-to-index**: Add mapping in `c_capabilities.py:PID_INDEX_MAP` (must match the C-side `map_prodIds` order)
 
 ### When Python code changes are needed
 
@@ -313,7 +315,19 @@ The ctypes callback objects (`pActionCB`, `pTypeCheckCB`, `pDevStatusCB`, `pBrid
 `SNManager.generate_sn(device_id)` uses SHA256 hash to generate SNs. The same `device_id` always produces the same SN. This is critical for device persistence across restarts.
 
 ### PID-to-Index Mapping Must Stay in Sync
-The `_get_pid_index()` function in `hwbridge.py` and the C-side `map_prodIds[]` array must be kept in sync. A mismatch causes the wrong device profile to be sent to HiLink.
+`c_capabilities.py:PID_INDEX_MAP` and the C-side `map_prodIds[]` array must be kept in sync. A mismatch causes the wrong device profile to be sent to HiLink, or the device to be skipped.
+
+### The C Side Is a Closed Prebuilt Library
+The repository ships only `hilink_bridge/lib/<arch>/libhilink_bridge.so`; there is no C source. The prebuilt library's device-type table covers `001`–`008` and its service vocabulary has no `climate` / `cover` / `fan` services. Adding a category therefore requires:
+
+1. C-side `SvcInfo` + device type + rebuilt `.so`;
+2. a Huawei-registered prodId;
+3. a new PID → index entry in `c_capabilities.py:PID_INDEX_MAP`.
+
+Python-only categories (`009` 空调 / `00A` 窗帘 / `00B` 风扇) are fully implemented for matching, control and state reporting, but `ServiceRouter.register_device()` rejects them with a warning until `is_c_supported(pid)` is true. Do not create bridge device entries for them — that would leave ghost devices that can never sync to Huawei.
+
+### C-side Capability Gate
+`ServiceRouter.register_device()` checks `c_capabilities.is_c_supported(product.pid)` **before** creating a `VirtualDevice`. Unsupported categories are counted in `ServiceRouter.skipped_unsupported` and logged once per `(device_id, pid)`; discovery logs a summary. When the C library gains support, only `PID_INDEX_MAP` needs updating.
 
 ### Framework is Source of Truth for Huawei Definitions
 `config/product_registry.json` (framework) is the source of truth for Huawei-side definitions (PID, service_type, char_name). Default and vendor adapters only provide HA-side mappings.
@@ -358,6 +372,13 @@ python validate_config.py
 ```
 Validates framework + default + vendor adapter JSON files for consistency (PID references, action+domain compatibility, match_rules validity).
 
+### Unit Tests
+```bash
+python -m pip install -r requirements_test.txt
+python -m pytest tests -q
+```
+Tests do not require Home Assistant; they fake `hass.states` and the C reporting entry points. `tests/conftest.py` registers the component directory as a top-level `hwhomebridge` package so `__init__.py` (which imports HA) is not executed.
+
 ## Configuration
 
 - `config/product_registry.json` — Framework: PID, service_type, char_name, auto_match
@@ -374,5 +395,6 @@ Validates framework + default + vendor adapter JSON files for consistency (PID r
 - `product_registry.py` — Three-layer config loading (framework + default + vendor), merge logic
 - `product_matcher.py` — Three-level matching engine (vendor match_rules → auto_match → skip)
 - `service_action.py` — ServiceActionDispatcher (control command execution)
+- `c_capabilities.py` — PID → C device-type index and `is_c_supported()` gate
 - `validate_config.py` — Configuration validation tool
 - `hilink_bridge/adapter/profile_adapter/hilink_profile_bridge.c` — C-side bridge logic

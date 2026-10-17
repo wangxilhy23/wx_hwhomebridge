@@ -248,6 +248,73 @@ value_mapping 定义在**适配器层**的 service 配置中：
 
 ---
 
+## 示例7：climate / cover / fan 品类（009 / 00A / 00B）
+
+这三个品类只有 Python 侧实现，当前预编译 `libhilink_bridge.so` 不支持，设备会被能力门控跳过；配置和映射逻辑已就绪，C 侧就绪后即可启用。
+
+服务契约：
+
+| PID | 品类 | service_id | domain | action | value_attr |
+| --- | --- | --- | --- | --- | --- |
+| 009 | 空调 | `switch` | climate | `turn_on_off` | state |
+| 009 | 空调 | `mode` | climate | `set_hvac_mode` | hvac_mode |
+| 009 | 空调 | `temperature` | climate | `set_temperature` | temperature |
+| 009 | 空调 | `fanSpeed` | climate | `set_fan_speed` | fan_mode |
+| 00A | 窗帘 | `switch` | cover | `turn_on_off` | state |
+| 00A | 窗帘 | `position` | cover | `set_position` | current_position |
+| 00B | 风扇 | `switch` | fan | `turn_on_off` | state |
+| 00B | 风扇 | `fanSpeed` | fan | `set_fan_speed` | percentage |
+
+**空调运行模式**（华为枚举 → HA `hvac_mode`）：
+
+```json
+{
+    "domain": "climate",
+    "action": "set_hvac_mode",
+    "value_attr": "hvac_mode",
+    "value_mapping": {
+        "type": "enum_to_text_multi",
+        "mapping": {
+            "0": ["off", "关闭"],
+            "1": ["cool", "制冷"],
+            "2": ["heat", "制热"],
+            "3": ["dry", "除湿"],
+            "4": ["fan_only", "送风"],
+            "5": ["auto", "自动"]
+        }
+    }
+}
+```
+
+控制时从实体 `attributes.hvac_modes` 里匹配候选文本；上报时用当前 `state`（关闭时为 `off`）反查枚举。
+
+**空调风速**（华为档位 → HA `fan_modes`）：
+
+```json
+{
+    "domain": "climate",
+    "action": "set_fan_speed",
+    "value_attr": "fan_mode",
+    "value_mapping": {
+        "type": "enum_to_text_multi",
+        "mapping": {
+            "1": ["low", "Low", "低", "1档"],
+            "2": ["medium", "Medium", "中", "2档"],
+            "3": ["high", "High", "高", "3档"],
+            "4": ["auto", "Auto", "自动"]
+        }
+    }
+}
+```
+
+**窗帘位置**：`position` 直接使用 0–100，控制调用 `cover.set_cover_position`，上报读取 `attributes.current_position`。
+
+**风扇风速**：`fanSpeed` 直接使用 0–100，控制调用 `fan.set_percentage`，上报读取 `attributes.percentage`。
+
+> 华为枚举值与 characteristicName 是占位契约，真实 C profile 到位后只需调整上述 JSON，不需要改 Python 控制/上报代码。
+
+---
+
 ## 实现细节
 
 ### 核心类
@@ -273,6 +340,7 @@ class ValueMapping:
    - `dispatch()` 方法调用 `_apply_value_mapping()`
    - `_handle_set_option()` 支持 `enum_to_text_multi` 多值匹配
    - `_handle_set_value()` 支持 `enum_to_number` 转换
+   - `_handle_set_hvac_mode()` / `_handle_set_temperature()` / `_handle_set_fan_speed()` / `_handle_set_position()` 分别处理 climate / cover 品类
    - `_find_matching_option()` 执行匹配算法
 
 2. **service_router.py**:
@@ -289,5 +357,6 @@ class ValueMapping:
 4. **多值匹配优先级**：精确匹配 > 大小写不敏感匹配 > 子串匹配
 5. **三层继承**：厂家适配器的 value_mapping **整体覆盖**默认适配器的 value_mapping（不支持条目级合并），如需修改单个条目需完整复制
 6. **select + text_to_enum**：text_to_enum 不仅支持 sensor 域，也支持 select 域（如美的电饭煲工作状态）
+7. **climate / cover / fan**：009 / 00A / 00B 仅在 Python 侧实现，需 C 侧支持后才会真正接入；枚举值需与真实 profile 对齐
 
 ---

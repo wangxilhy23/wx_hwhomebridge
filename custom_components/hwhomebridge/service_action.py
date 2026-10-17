@@ -77,8 +77,14 @@ class ServiceActionDispatcher:
                 return self._handle_set_color(entity_id, transformed_payload)
             elif action == "set_speed":
                 return self._handle_set_speed(entity_id, transformed_payload)
+            elif action == "set_fan_speed":
+                return self._handle_set_fan_speed(entity_id, transformed_payload, mapping)
             elif action == "set_temperature":
-                return self._handle_set_temperature(entity_id, transformed_payload)
+                return self._handle_set_temperature(entity_id, transformed_payload, mapping)
+            elif action == "set_hvac_mode":
+                return self._handle_set_hvac_mode(entity_id, transformed_payload, mapping)
+            elif action == "set_position":
+                return self._handle_set_position(entity_id, transformed_payload, mapping)
             elif action == "press":
                 return self._handle_press(entity_id)
             elif action == "set_option":
@@ -226,7 +232,18 @@ class ServiceActionDispatcher:
                 _LOGGER.debug(f"Ignored switch=on for select entity {entity_id} (handled by on_command)")
             return True
 
-        # 普通开关处理（switch/light/fan）
+        # cover 域：没有 turn_on/turn_off，用 open_cover/close_cover
+        if domain == "cover":
+            service = "open_cover" if power_on else "close_cover"
+            self._call_service_async(
+                domain="cover",
+                service=service,
+                entity_id=entity_id
+            )
+            _LOGGER.info(f"Cover {'open' if power_on else 'close'}: {entity_id}")
+            return True
+
+        # 普通开关处理（switch/light/fan/climate）
         service = "turn_on" if power_on else "turn_off"
         self._call_service_async(
             domain=domain,
@@ -324,15 +341,186 @@ class ServiceActionDispatcher:
         )
         return True
 
-    def _handle_set_temperature(self, entity_id: str, payload: dict) -> bool:
-        """处理温度设置（适用于热水壶等设备）"""
+    def _handle_set_temperature(self, entity_id: str, payload: dict,
+                                 mapping: HAMapping = None) -> bool:
+        """处理目标温度设置（适用于 climate）
+
+        华为 payload 使用 ``temperature`` 字段；按 value_range 裁剪到设备支持范围。
+        """
         if not self._hass:
             return False
 
-        # sensor 类 entity 通常不支持设置温度
-        # 这个 action 主要用于扩展，目前暂不实现
-        _LOGGER.info(f"set_temperature not implemented yet for {entity_id}")
+        raw_value = payload.get("temperature",
+                                payload.get("heatingTarget",
+                                            payload.get("value")))
+        if raw_value is None:
+            _LOGGER.warning(f"set_temperature: no temperature in payload for {entity_id}")
+            return False
+
+        try:
+            value = float(raw_value)
+        except (ValueError, TypeError):
+            _LOGGER.warning(f"set_temperature: invalid value {raw_value!r} for {entity_id}")
+            return False
+
+        min_value, max_value = 16.0, 30.0
+        if mapping and mapping.value_range and len(mapping.value_range) == 2:
+            min_value, max_value = mapping.value_range
+
+        if value < min_value:
+            _LOGGER.info(f"Target temperature {value} below {min_value}, clamped")
+            value = min_value
+        elif value > max_value:
+            _LOGGER.info(f"Target temperature {value} above {max_value}, clamped")
+            value = max_value
+
+        self._call_service_async(
+            domain=entity_id.split('.')[0],
+            service="set_temperature",
+            entity_id=entity_id,
+            data={"temperature": value}
+        )
+        return True
+
+    def _handle_set_hvac_mode(self, entity_id: str, payload: dict,
+                                mapping: HAMapping = None) -> bool:
+        """处理空调运行模式（华为枚举 → HA hvac_mode）"""
+        if not self._hass:
+            return False
+
+        hw_mode = payload.get("mode")
+        if hw_mode is None:
+            _LOGGER.warning(f"set_hvac_mode: no mode in payload for {entity_id}")
+            return False
+
+        possible = self._mapped_values(hw_mode, mapping)
+        hvac_modes = self._get_entity_attr(entity_id, "hvac_modes", []) or []
+        matched = self._find_matching_option(possible, hvac_modes)
+
+        if not matched:
+            if not hvac_modes:
+                matched = str(possible[0])
+                _LOGGER.debug(f"set_hvac_mode: no hvac_modes attribute, fallback to {matched!r}")
+            else:
+                _LOGGER.warning(f"set_hvac_mode: no match for hw_mode={hw_mode}, "
+                                f"possible={possible}, hvac_modes={hvac_modes}")
+                return False
+
+        self._call_service_async(
+            domain="climate",
+            service="set_hvac_mode",
+            entity_id=entity_id,
+            data={"hvac_mode": matched}
+        )
+        _LOGGER.info(f"set_hvac_mode: hw_mode={hw_mode} -> ha_mode={matched}")
+        return True
+
+    def _handle_set_position(self, entity_id: str, payload: dict,
+                              mapping: HAMapping = None) -> bool:
+        """处理窗帘开合度（0-100）"""
+        if not self._hass:
+            return False
+
+        raw_value = payload.get("position", payload.get("value"))
+        if raw_value is None:
+            _LOGGER.warning(f"set_position: no position in payload for {entity_id}")
+            return False
+
+        try:
+            position = int(round(float(raw_value)))
+        except (ValueError, TypeError):
+            _LOGGER.warning(f"set_position: invalid value {raw_value!r} for {entity_id}")
+            return False
+
+        position = max(0, min(100, position))
+        self._call_service_async(
+            domain="cover",
+            service="set_cover_position",
+            entity_id=entity_id,
+            data={"position": position}
+        )
+        return True
+
+    def _handle_set_fan_speed(self, entity_id: str, payload: dict,
+                               mapping: HAMapping = None) -> bool:
+        """处理风速设置
+
+        - fan 域：华为 fanSpeed 作为 0-100 百分比 → fan.set_percentage
+        - climate 域：华为档位枚举 → 实体 fan_modes 文本 → climate.set_fan_mode
+        """
+        if not self._hass:
+            return False
+
+        hw_speed = payload.get("fanSpeed", payload.get("speed"))
+        if hw_speed is None:
+            _LOGGER.warning(f"set_fan_speed: no fanSpeed in payload for {entity_id}")
+            return False
+
+        domain = entity_id.split('.')[0]
+
+        if domain == "fan":
+            try:
+                percentage = int(round(float(hw_speed)))
+            except (ValueError, TypeError):
+                _LOGGER.warning(f"set_fan_speed: invalid percentage {hw_speed!r} for {entity_id}")
+                return False
+            percentage = max(0, min(100, percentage))
+            self._call_service_async(
+                domain="fan",
+                service="set_percentage",
+                entity_id=entity_id,
+                data={"percentage": percentage}
+            )
+            return True
+
+        if domain == "climate":
+            possible = self._mapped_values(hw_speed, mapping)
+            fan_modes = self._get_entity_attr(entity_id, "fan_modes", []) or []
+            matched = self._find_matching_option(possible, fan_modes)
+
+            if not matched:
+                if not fan_modes:
+                    matched = str(possible[0])
+                    _LOGGER.debug(f"set_fan_speed: no fan_modes attribute, fallback to {matched!r}")
+                else:
+                    _LOGGER.warning(f"set_fan_speed: no match for hw_speed={hw_speed}, "
+                                    f"possible={possible}, fan_modes={fan_modes}")
+                    return False
+
+            self._call_service_async(
+                domain="climate",
+                service="set_fan_mode",
+                entity_id=entity_id,
+                data={"fan_mode": matched}
+            )
+            _LOGGER.info(f"set_fan_speed: hw_speed={hw_speed} -> fan_mode={matched}")
+            return True
+
+        _LOGGER.warning(f"set_fan_speed: unsupported domain '{domain}' for {entity_id}")
         return False
+
+    def _mapped_values(self, hw_value, mapping: HAMapping = None) -> list:
+        """把华为值映射为若干候选 HA 文本值"""
+        possible = [str(hw_value)]
+        if mapping and mapping.value_mapping:
+            mapped = mapping.value_mapping.transform_hw_to_ha(hw_value)
+            if isinstance(mapped, list):
+                possible = [str(v) for v in mapped]
+            elif mapped is not None:
+                possible = [str(mapped)]
+        return possible
+
+    def _get_entity_attr(self, entity_id: str, attr: str, default=None):
+        """安全读取实体属性"""
+        if not self._hass:
+            return default
+        try:
+            state = self._hass.states.get(entity_id)
+            if state and state.attributes:
+                return state.attributes.get(attr, default)
+        except Exception as e:  # pragma: no cover - 防御性兜底
+            _LOGGER.debug(f"Failed to read attribute '{attr}' of {entity_id}: {e}")
+        return default
 
     def _handle_press(self, entity_id: str) -> bool:
         """处理按钮操作（适用于电饭煲 action 等 button 类型 entity）"""

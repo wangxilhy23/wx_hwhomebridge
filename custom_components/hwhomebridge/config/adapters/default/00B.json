@@ -1,0 +1,15 @@
+{
+    "pid": "00B",
+    "services": {
+        "switch": {
+            "domain": "fan",
+            "action": "turn_on_off",
+            "value_attr": "state"
+        },
+        "fanSpeed": {
+            "domain": "fan",
+            "action": "set_fan_speed",
+            "value_attr": "percentage"
+        }
+    }
+}

@@ -32,12 +32,15 @@ _LOGGER = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 VALID_ACTION_DOMAIN_MAP = {
-    "turn_on_off": ["switch", "light", "fan", "select"],
+    "turn_on_off": ["switch", "light", "fan", "cover", "climate", "select"],
     "set_brightness": ["light"],
     "set_color_temp": ["light"],
     "set_color": ["light"],
     "set_speed": ["fan"],
+    "set_fan_speed": ["fan", "climate"],
     "set_temperature": ["climate", "water_heater"],
+    "set_hvac_mode": ["climate"],
+    "set_position": ["cover"],
     "press": ["button"],
     "set_option": ["select", "input_select"],
     "set_value": ["number", "input_number"],

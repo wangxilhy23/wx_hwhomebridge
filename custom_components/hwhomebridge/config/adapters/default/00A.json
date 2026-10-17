@@ -1,0 +1,15 @@
+{
+    "pid": "00A",
+    "services": {
+        "switch": {
+            "domain": "cover",
+            "action": "turn_on_off",
+            "value_attr": "state"
+        },
+        "position": {
+            "domain": "cover",
+            "action": "set_position",
+            "value_attr": "current_position"
+        }
+    }
+}

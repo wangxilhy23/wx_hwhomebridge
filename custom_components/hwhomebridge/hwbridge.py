@@ -37,6 +37,7 @@ from .pin_manager import PINManager
 from .virtual_device import SNManager
 from .const import SKIP_PLATFORMS, DOMAIN
 from .native_async import drain_native, submit_callback
+from .c_capabilities import get_pid_index, is_c_supported
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -111,6 +112,16 @@ async def start_hw_hilink_bridge(hass: HomeAssistant):
                       f"{service_router.registry.get_product_count()} products, "
                       f"{service_router.registry.get_default_count()} defaults, "
                       f"{service_router.registry.get_adapter_count()} vendor adapters")
+        # Python 侧已适配、但预编译 .so 还不支持的品类：启动时提示一次
+        for pid in service_router.registry.list_product_ids():
+            if not is_c_supported(pid):
+                product = service_router.registry.get_product(pid)
+                _LOGGER.warning(
+                    "Product %s (%s) is implemented in Python but not supported by the "
+                    "bundled libhilink_bridge.so; matching devices will be skipped until "
+                    "the C library is rebuilt and the Huawei PID is registered",
+                    pid, product.name if product else "?",
+                )
     else:
         _LOGGER.error("Failed to load product registry, device matching will not work")
 
@@ -440,6 +451,16 @@ def OnDevStatusCB(sn_data, svcId):
         state = ghass.states.get(entity_id)
         domain = entity_id.split('.')[0] if entity_id else ""
         
+        # climate/cover 域没有 "on" 状态，需要按语义换算
+        # climate: off/unavailable/unknown 视为关，其余 hvac_mode 视为开
+        # cover: open/opening 视为开，closed/closing 视为关
+        if svc_id_decoded == "switch" and domain in ("climate", "cover"):
+            if state is None:
+                return 0
+            if domain == "cover":
+                return 1 if state.state in ("open", "opening") else 0
+            return 0 if state.state in ("off", "unavailable", "unknown", "") else 1
+
         # 特殊处理：button/select 域没有 on/off 状态，使用缓存的 switch_state
         # button: 电饭煲取消按钮（小米电饭煲）
         # select: 电饭煲工作状态 select（美的电饭煲），通过 text_to_enum 映射后缓存
@@ -836,7 +857,8 @@ def _discover_and_register_devices(hass: HomeAssistant):
 
     registered_count = 0
     skipped_count = 0
-    
+    service_router.skipped_unsupported = 0
+
     # 对每个 device，调用 _register_single_device
     for device_id in all_devices.keys():
         result = _register_single_device(device_id)
@@ -844,9 +866,17 @@ def _discover_and_register_devices(hass: HomeAssistant):
             registered_count += 1
         else:
             skipped_count += 1
-    
+
     _LOGGER.info(f"Device discovery complete: {registered_count} registered, "
                  f"{skipped_count} skipped")
+
+    if service_router.skipped_unsupported:
+        _LOGGER.warning(
+            "Device discovery skipped %d device(s) whose category is implemented in "
+            "Python but not supported by the bundled libhilink_bridge.so; "
+            "see c_capabilities.PID_INDEX_MAP for the C-side contract",
+            service_router.skipped_unsupported,
+        )
 
 
 def _register_single_device(device_id: str, reuse_sn: str = None, is_update: bool = False) -> bool:
@@ -977,8 +1007,9 @@ def _register_single_device(device_id: str, reuse_sn: str = None, is_update: boo
                      f"name={name}, model={model}")
         return True
     else:
-        # 匹配失败，静默跳过
-        _LOGGER.debug(f"Device {device_id} ({name}, model={model}) did not match any product, skipping")
+        # 匹配失败，或匹配到的品类当前 C 侧不支持，静默跳过
+        _LOGGER.debug(f"Device {device_id} ({name}, model={model}) did not match any "
+                      f"C-supported product, skipping")
         return False
 
 
@@ -1402,31 +1433,13 @@ def _cleanup_all_device_entries_async():
 # ---------------------------------------------------------------------------
 
 def _get_pid_index(pid: str) -> int:
-    """查询 PID 在 C 侧 map_prodIds 数组中的索引
+    """查询 PID 在 C 侧设备类型表中的索引
 
-    C 侧的 map_prodIds 数组：
-    index 0 -> "001"
-    index 1 -> "002"
-    index 2 -> "003"
-    index 3 -> "004"
-    index 4 -> "005"
-    index 5 -> "006"
-    index 6 -> "007"
-    index 7 -> "008"
-
-    此映射需要与 C 侧保持同步。后续可以通过自动生成来保证一致性。
+    映射表已集中到 ``c_capabilities.PID_INDEX_MAP``，与预编译
+    libhilink_bridge.so 的 map_prodIds 严格对应。
+    未知 PID 返回 -1，C 侧会跳过该设备。
     """
-    pid_index_map = {
-        "001": 0,
-        "002": 1,
-        "003": 2,
-        "004": 3,
-        "005": 4,
-        "006": 5,
-        "007": 6,
-        "008": 7,
-    }
-    return pid_index_map.get(pid, -1)
+    return get_pid_index(pid)
 
 
 def _save_device_id(device_id: str):

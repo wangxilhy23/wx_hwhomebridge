@@ -1,0 +1,6 @@
+{
+    "pid": "00B",
+    "match_rules": [
+        {"type": "model_keyword", "keywords": ["dmaker.fan"]}
+    ]
+}

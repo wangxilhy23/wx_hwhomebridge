@@ -86,6 +86,41 @@
                 "power": {"service_type": "electric", "char_name": "currentPower1", "c_service_id": "electric", "value_type": "float", "description": "当前功率"},
                 "current": {"service_type": "electric", "char_name": "currentElectric1", "c_service_id": "electric", "value_type": "float", "description": "当前电流"}
             }
+        },
+        {
+            "pid": "009",
+            "name": "空调",
+            "auto_match": {
+                "required_domains": ["climate"]
+            },
+            "services": {
+                "switch": {"service_type": "switch", "char_name": "on"},
+                "mode": {"service_type": "mode", "char_name": "mode", "description": "运行模式"},
+                "temperature": {"service_type": "temperature", "char_name": "temperature", "description": "目标温度"},
+                "fanSpeed": {"service_type": "fanSpeed", "char_name": "fanSpeed", "description": "风速档位"}
+            }
+        },
+        {
+            "pid": "00A",
+            "name": "窗帘",
+            "auto_match": {
+                "required_domains": ["cover"]
+            },
+            "services": {
+                "switch": {"service_type": "switch", "char_name": "on"},
+                "position": {"service_type": "position", "char_name": "position", "description": "开合度"}
+            }
+        },
+        {
+            "pid": "00B",
+            "name": "风扇",
+            "auto_match": {
+                "required_domains": ["fan"]
+            },
+            "services": {
+                "switch": {"service_type": "switch", "char_name": "on"},
+                "fanSpeed": {"service_type": "fanSpeed", "char_name": "fanSpeed", "description": "风速百分比"}
+            }
         }
     ]
 }

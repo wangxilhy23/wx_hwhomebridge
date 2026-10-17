@@ -1,0 +1,48 @@
+{
+    "pid": "009",
+    "services": {
+        "switch": {
+            "domain": "climate",
+            "action": "turn_on_off",
+            "value_attr": "state"
+        },
+        "mode": {
+            "domain": "climate",
+            "action": "set_hvac_mode",
+            "value_attr": "hvac_mode",
+            "value_mapping": {
+                "type": "enum_to_text_multi",
+                "description": "华为运行模式枚举与 HA hvac_mode 的占位映射，待真实 profile enumList 确认",
+                "mapping": {
+                    "0": ["off", "关闭"],
+                    "1": ["cool", "制冷"],
+                    "2": ["heat", "制热"],
+                    "3": ["dry", "除湿"],
+                    "4": ["fan_only", "送风"],
+                    "5": ["auto", "heat_cool", "自动"]
+                }
+            }
+        },
+        "temperature": {
+            "domain": "climate",
+            "action": "set_temperature",
+            "value_attr": "temperature",
+            "value_range": [16, 30]
+        },
+        "fanSpeed": {
+            "domain": "climate",
+            "action": "set_fan_speed",
+            "value_attr": "fan_mode",
+            "value_mapping": {
+                "type": "enum_to_text_multi",
+                "description": "华为风速档位与 HA fan_mode 的占位映射",
+                "mapping": {
+                    "1": ["low", "Low", "低", "1档"],
+                    "2": ["medium", "Medium", "middle", "中", "2档"],
+                    "3": ["high", "High", "高", "3档"],
+                    "4": ["auto", "Auto", "自动"]
+                }
+            }
+        }
+    }
+}

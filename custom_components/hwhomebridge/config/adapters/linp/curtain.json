@@ -1,0 +1,6 @@
+{
+    "pid": "00A",
+    "match_rules": [
+        {"type": "model_keyword", "keywords": ["linp.curtain"]}
+    ]
+}

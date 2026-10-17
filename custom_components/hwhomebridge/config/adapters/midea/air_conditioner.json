@@ -1,0 +1,6 @@
+{
+    "pid": "009",
+    "match_rules": [
+        {"type": "model_keyword", "keywords": ["Air Conditioner"]}
+    ]
+}

@@ -18,6 +18,7 @@ from .product_matcher import ProductMatcher, DeviceInfo
 from .virtual_device import VirtualDevice, ServiceEntry, SNManager
 from .service_action import ServiceActionDispatcher
 from .native_async import submit_native
+from .c_capabilities import is_c_supported
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,6 +35,10 @@ class ServiceRouter:
         self.action_dispatcher = ServiceActionDispatcher()
         self._lib = None  # C library reference，用于调用 UpdateHAStatus 等
         self._hass = None  # HA instance
+        # 已提示过的 (device_id, pid)，避免同一设备每次发现都刷日志
+        self._unsupported_logged = set()
+        # 最近一次设备发现中因 C 侧不支持而跳过的数量
+        self.skipped_unsupported = 0
 
     def set_hass(self, hass):
         """设置 HomeAssistant 实例"""
@@ -113,7 +118,28 @@ class ServiceRouter:
             _LOGGER.debug(f"Device {device_id} ({model}) did not match any product, skip")
             return None
 
-        # 3. 创建 VirtualDevice
+        # 3. C 能力门控：Python 侧已适配，但当前预编译 .so 还没有该设备类型。
+        #    此时不能创建 VirtualDevice / 桥接设备条目，否则会在 HA 里留下永远
+        #    无法同步到华为侧的幽灵设备。
+        if not is_c_supported(product.pid):
+            # 设备更新场景：如果旧映射存在，先移除，避免继续用旧品类上报
+            if reuse_sn:
+                self.sn_manager.unregister(reuse_sn)
+            key = (device_id, product.pid)
+            if key not in self._unsupported_logged:
+                self._unsupported_logged.add(key)
+                _LOGGER.warning(
+                    "设备 %s (%s) 匹配到 %s (%s)，但当前 libhilink_bridge.so 不支持该品类，"
+                    "已跳过；需要 C 侧重编译并在 c_capabilities.PID_INDEX_MAP 注册索引",
+                    device_name or device_id,
+                    model or "-",
+                    product.pid,
+                    product.name,
+                )
+            self.skipped_unsupported += 1
+            return None
+
+        # 4. 创建 VirtualDevice
         if reuse_sn:
             # 更新场景：复用原 SN
             # 先注销旧的 VirtualDevice（如果存在）
@@ -125,7 +151,7 @@ class ServiceRouter:
         
         vd = VirtualDevice(sn=sn, product=product, ha_device_id=device_id)
 
-        # 4. 建立 service → entity 映射
+        # 5. 建立 service → entity 映射
         mapping_count = self._build_service_mapping(vd, product, entity_list)
 
         if mapping_count == 0:
@@ -133,7 +159,7 @@ class ServiceRouter:
                             f"but no service-entity mapping could be established, skip")
             return None
 
-        # 5. 注册到 SNManager
+        # 6. 注册到 SNManager
         result = self.sn_manager.register(vd)
         if not result:
             _LOGGER.error(f"Device {device_id}: SNManager registration failed (SN conflict?)")
@@ -452,12 +478,14 @@ class ServiceRouter:
             "speed": ["speed"],
             "red": ["color"],
             "colorTemperature": ["cct", "color_temp"],
-            "temperature": ["temperature"],
+            "temperature": ["temperature", "heatingTarget"],
             "mode": ["mode", "cooker", "alarmBell"],
             "status": ["status"],
             "timer": ["timer"],
             "delay": ["delay"],
             "leftTime": ["leftTime"],
+            "position": ["position"],
+            "fanSpeed": ["fanSpeed"],
             "action": ["action"],
             "cooker": ["cooker"],
             "pressure": ["pressure"],
@@ -553,13 +581,28 @@ class ServiceRouter:
         char_name = svc_def.char_name
         c_svc_id = svc_def.c_service_id or service_id
 
-        if value_attr == "state" and domain in ("switch", "light", "fan"):
+        # --- climate：开关 / 运行模式 / 目标温度 / 风速 ---
+        if domain == "climate":
+            self._report_climate(sn, service_id, svc_def, entity_state)
+            return
+
+        # --- cover：开/关 / 开合度 ---
+        if domain == "cover":
+            self._report_cover(sn, service_id, svc_def, entity_state)
+            return
+
+        # --- fan：开关 / 百分比 ---
+        if domain == "fan":
+            self._report_fan(sn, service_id, svc_def, entity_state)
+            return
+
+        if value_attr == "state" and domain in ("switch", "light"):
             # switch 类型：上报 on/off
             is_on = entity_state.state == "on"
             self._update_hw_bridge_status(sn, c_svc_id, {char_name: 1 if is_on else 0})
 
-            # light/fan 类型需要额外上报属性
-            if entity_state.state == "on" and domain in ("light", "fan"):
+            # light 类型需要额外上报亮度、色温
+            if entity_state.state == "on" and domain == "light":
                 self._report_additional_attributes(sn, entity_state, mapping)
 
         elif value_attr == "state" and domain in ("sensor", "binary_sensor"):
@@ -701,6 +744,126 @@ class ServiceRouter:
         else:
             _LOGGER.debug(f"Unhandled report type: domain={domain}, "
                            f"value_attr={value_attr}, service_id={service_id}")
+
+    def _report_climate(self, sn: str, service_id: str,
+                        svc_def: ServiceDef, entity_state):
+        """上报空调状态：开关 / 运行模式 / 目标温度 / 风速"""
+        mapping = svc_def.ha_mapping
+        char_name = svc_def.char_name
+        c_svc_id = svc_def.c_service_id or service_id
+        state_value = entity_state.state
+
+        if state_value in ("unavailable", "unknown", ""):
+            return
+
+        attrs = entity_state.attributes or {}
+
+        if service_id == "switch":
+            is_on = state_value != "off"
+            self._update_hw_bridge_status(sn, c_svc_id, {char_name: 1 if is_on else 0})
+            return
+
+        if service_id == "mode":
+            hw_value = (mapping.value_mapping.transform_ha_to_hw(state_value)
+                        if mapping.value_mapping else state_value)
+            try:
+                hw_enum = int(hw_value)
+            except (ValueError, TypeError):
+                _LOGGER.warning(f"Cannot map hvac_mode '{state_value}' to enum for {sn}")
+                return
+            self._update_hw_bridge_status(sn, c_svc_id, {char_name: hw_enum})
+            _LOGGER.debug(f"Reported climate mode: '{state_value}' -> {hw_enum}")
+            return
+
+        if service_id == "temperature":
+            target = attrs.get("temperature")
+            if target is None:
+                return
+            try:
+                target_value = int(round(float(target)))
+            except (ValueError, TypeError):
+                _LOGGER.debug(f"Cannot parse target temperature '{target}' for {sn}")
+                return
+            self._update_hw_bridge_status(sn, c_svc_id, {char_name: target_value})
+            return
+
+        if service_id == "fanSpeed":
+            fan_mode = attrs.get("fan_mode")
+            if not fan_mode:
+                return
+            hw_value = (mapping.value_mapping.transform_ha_to_hw(fan_mode)
+                        if mapping.value_mapping else fan_mode)
+            try:
+                hw_enum = int(hw_value)
+            except (ValueError, TypeError):
+                _LOGGER.warning(f"Cannot map fan_mode '{fan_mode}' to enum for {sn}")
+                return
+            self._update_hw_bridge_status(sn, c_svc_id, {char_name: hw_enum})
+            return
+
+        _LOGGER.debug(f"Unhandled climate service: {service_id}")
+
+    def _report_cover(self, sn: str, service_id: str,
+                      svc_def: ServiceDef, entity_state):
+        """上报窗帘状态：开/关 / 开合度"""
+        char_name = svc_def.char_name
+        c_svc_id = svc_def.c_service_id or service_id
+        state_value = entity_state.state
+
+        if state_value in ("unavailable", "unknown", ""):
+            return
+
+        attrs = entity_state.attributes or {}
+
+        if service_id == "switch":
+            is_on = state_value in ("open", "opening")
+            self._update_hw_bridge_status(sn, c_svc_id, {char_name: 1 if is_on else 0})
+            return
+
+        if service_id == "position":
+            position = attrs.get("current_position")
+            if position is None:
+                return
+            try:
+                position_value = max(0, min(100, int(round(float(position)))))
+            except (ValueError, TypeError):
+                _LOGGER.debug(f"Cannot parse cover position '{position}' for {sn}")
+                return
+            self._update_hw_bridge_status(sn, c_svc_id, {char_name: position_value})
+            return
+
+        _LOGGER.debug(f"Unhandled cover service: {service_id}")
+
+    def _report_fan(self, sn: str, service_id: str,
+                    svc_def: ServiceDef, entity_state):
+        """上报风扇状态：开关 / 风速百分比"""
+        char_name = svc_def.char_name
+        c_svc_id = svc_def.c_service_id or service_id
+        state_value = entity_state.state
+
+        if state_value in ("unavailable", "unknown", ""):
+            return
+
+        attrs = entity_state.attributes or {}
+
+        if service_id == "switch":
+            is_on = state_value == "on"
+            self._update_hw_bridge_status(sn, c_svc_id, {char_name: 1 if is_on else 0})
+            return
+
+        if service_id == "fanSpeed":
+            percentage = attrs.get("percentage")
+            if percentage is None:
+                return
+            try:
+                percentage_value = max(0, min(100, int(round(float(percentage)))))
+            except (ValueError, TypeError):
+                _LOGGER.debug(f"Cannot parse fan percentage '{percentage}' for {sn}")
+                return
+            self._update_hw_bridge_status(sn, c_svc_id, {char_name: percentage_value})
+            return
+
+        _LOGGER.debug(f"Unhandled fan service: {service_id}")
 
     def _report_additional_attributes(self, sn: str, entity_state,
                                        mapping: HAMapping):
@@ -911,8 +1074,73 @@ class ServiceRouter:
         state_value = entity_state.state
 
         try:
-            # --- switch / light / fan: 返回 on/off ---
-            if value_attr == "state" and domain in ("switch", "light", "fan"):
+            attrs = entity_state.attributes or {}
+
+            # --- climate: 开关 / 运行模式 / 目标温度 / 风速 ---
+            if domain == "climate":
+                if state_value in ("unavailable", "unknown", ""):
+                    return json.dumps({char_name: 0}) if svc_id == "switch" else None
+                if svc_id == "switch":
+                    return json.dumps({char_name: 0 if state_value == "off" else 1})
+                if svc_id == "mode":
+                    if state_value in ("unavailable", "unknown", ""):
+                        return None
+                    hw_value = (mapping.value_mapping.transform_ha_to_hw(state_value)
+                                if mapping.value_mapping else state_value)
+                    try:
+                        return json.dumps({char_name: int(hw_value)})
+                    except (ValueError, TypeError):
+                        return json.dumps({char_name: 0})
+                if svc_id == "temperature":
+                    target = attrs.get("temperature")
+                    if target is None:
+                        return None
+                    try:
+                        return json.dumps({char_name: int(round(float(target)))})
+                    except (ValueError, TypeError):
+                        return None
+                if svc_id == "fanSpeed":
+                    fan_mode = attrs.get("fan_mode")
+                    if not fan_mode:
+                        return None
+                    hw_value = (mapping.value_mapping.transform_ha_to_hw(fan_mode)
+                                if mapping.value_mapping else fan_mode)
+                    try:
+                        return json.dumps({char_name: int(hw_value)})
+                    except (ValueError, TypeError):
+                        return None
+                return None
+
+            # --- cover: 开关 / 开合度 ---
+            if domain == "cover":
+                if svc_id == "switch":
+                    return json.dumps({char_name: 1 if state_value in ("open", "opening") else 0})
+                if svc_id == "position":
+                    position = attrs.get("current_position")
+                    if position is None:
+                        return None
+                    try:
+                        return json.dumps({char_name: max(0, min(100, int(round(float(position)))))})
+                    except (ValueError, TypeError):
+                        return None
+                return None
+
+            # --- fan: 开关 / 风速百分比 ---
+            if domain == "fan":
+                if svc_id == "switch":
+                    return json.dumps({char_name: 1 if state_value == "on" else 0})
+                if svc_id == "fanSpeed":
+                    percentage = attrs.get("percentage")
+                    if percentage is None:
+                        return None
+                    try:
+                        return json.dumps({char_name: max(0, min(100, int(round(float(percentage)))))})
+                    except (ValueError, TypeError):
+                        return None
+                return None
+
+            # --- switch / light: 返回 on/off ---
+            if value_attr == "state" and domain in ("switch", "light"):
                 is_on = (state_value == "on")
                 return json.dumps({char_name: 1 if is_on else 0})
 
